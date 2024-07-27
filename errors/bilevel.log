@@ -1,0 +1,93 @@
+wandb: Currently logged in as: pyu123. Use `wandb login --relogin` to force relogin
+wandb: wandb version 0.17.5 is available!  To upgrade, please run:
+wandb:  $ pip install wandb --upgrade
+wandb: Tracking run with wandb version 0.16.1
+wandb: Run data is saved locally in /fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/wandb/run-20240726_214149-erb3nf0x
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run bilevel_minimax-SST2-0-roberta-base-OPTIM_prompt-STEP-1-adamw-LR5e-05-constant-ZOEPS0.001-Q1-LowerLR0.001-LowerSTEPS3
+wandb: ⭐️ View project at https://wandb.ai/pyu123/zo-bench
+wandb: 🚀 View run at https://wandb.ai/pyu123/zo-bench/runs/erb3nf0x
+2024-07-26 21:41:58,116 - WARNING - num_train + num_dev > available training examples
+2024-07-26 21:41:58,117 - INFO - Sample train set 67349/67349
+2024-07-26 21:41:58,117 - INFO - ... including dev set 872 samples
+2024-07-26 21:41:58,117 - INFO - Loading model with FP32...
+If you want to use `RobertaLMHeadModel` as a standalone, add `is_decoder=True.`
+2024-07-26 21:42:10,971 - INFO - Done with 12.85s
+2024-07-26 21:42:11,167 - INFO - Dev samples: 872
+2024-07-26 21:42:11,167 - INFO - Train samples: 66477
+2024-07-26 21:42:11,167 - INFO - Eval sample length is 872
+2024-07-26 21:42:11,168 - INFO - Tokenizing training samples...
+2024-07-26 21:42:27,888 - INFO - Done with 16.72s
+/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/transformers/optimization.py:391: FutureWarning: This implementation of AdamW is deprecated and will be removed in a future version. Use the PyTorch implementation torch.optim.AdamW instead, or set `no_deprecation_warning=True` to disable this warning
+  warnings.warn(
+2024-07-26 21:42:28,190 - INFO - ***** Running training *****
+2024-07-26 21:42:28,190 - INFO -   Num examples = 872
+2024-07-26 21:42:28,190 - INFO -   Num Epochs = 3
+2024-07-26 21:42:28,190 - INFO -   Instantaneous batch size per device = 8
+2024-07-26 21:42:28,190 - INFO -   Total train batch size (w. parallel, distributed & accumulation) = 8
+2024-07-26 21:42:28,191 - INFO -   Gradient Accumulation steps = 1
+2024-07-26 21:42:28,191 - INFO -   Total optimization steps = 327
+2024-07-26 21:42:28,191 - INFO -   Number of trainable parameters = 7680
+  0%|          | 0/327 [00:00<?, ?it/s]You're using a RobertaTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+2024-07-26 21:42:28,241 - INFO - ***** Running training *****
+2024-07-26 21:42:28,241 - INFO -   Num examples = 872
+2024-07-26 21:42:28,241 - INFO -   Num Epochs = 1
+2024-07-26 21:42:28,241 - INFO -   Instantaneous batch size per device = 8
+2024-07-26 21:42:28,241 - INFO -   Total train batch size (w. parallel, distributed & accumulation) = 8
+2024-07-26 21:42:28,241 - INFO -   Gradient Accumulation steps = 1
+2024-07-26 21:42:28,241 - INFO -   Total optimization steps = 3
+2024-07-26 21:42:28,242 - INFO -   Number of trainable parameters = 7,680
+
+  0%|          | 0/3 [00:00<?, ?it/s][ATraceback (most recent call last):
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/run_bilevel.py", line 752, in <module>
+    main()
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/run_bilevel.py", line 704, in main
+    framework.train(train_samples, dev_samples if dev_samples is not None else eval_samples, eval_samples)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/run_bilevel.py", line 575, in train
+    trainer.train(resume_from_checkpoint=last_checkpoint)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/transformers/trainer.py", line 1662, in train
+    return inner_training_loop(
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/bilevel_minimax_trainer.py", line 510, in _inner_training_loop
+    self.lower_level_train(self.model_s)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/bilevel_minimax_trainer.py", line 922, in lower_level_train
+    lower_level_trainer.train()
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/transformers/trainer.py", line 1662, in train
+    return inner_training_loop(
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/lower_level_trainer.py", line 495, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/transformers/trainer.py", line 2699, in training_step
+    loss = self.compute_loss(model, inputs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/transformers/trainer.py", line 2731, in compute_loss
+    outputs = model(**inputs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/utils.py", line 47, in forward_wrap_with_option_len
+    outputs = self.original_forward(input_ids=input_ids, **kwargs)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/prompt_tuning.py", line 125, in _model_forward_hook
+    outputs = self.prompt_tuning_original_forward(inputs_embeds=inputs_embeds, **kwargs)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/prompt_tuning.py", line 125, in _model_forward_hook
+    outputs = self.prompt_tuning_original_forward(inputs_embeds=inputs_embeds, **kwargs)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/prompt_tuning.py", line 125, in _model_forward_hook
+    outputs = self.prompt_tuning_original_forward(inputs_embeds=inputs_embeds, **kwargs)
+  [Previous line repeated 484 more times]
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/prompt_tuning.py", line 120, in _model_forward_hook
+    prompts = self.prompt_encoder(prompts).to(dtype=inputs_embeds.dtype, device=input_device)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench/prompt_tuning.py", line 39, in forward
+    prompt_embeddings = self.embedding(indices)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1518, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1527, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/fs/nexus-scratch/peiran/anaconda3/envs/zollm/lib/python3.10/site-packages/torch/nn/modules/sparse.py", line 163, in forward
+    input, self.weight, self.padding_idx, self.max_norm,
+RecursionError: maximum recursion depth exceeded
+wandb: - 0.008 MB of 0.008 MB uploadedwandb: \ 0.008 MB of 0.008 MB uploadedwandb: | 0.008 MB of 0.008 MB uploadedwandb: / 0.008 MB of 0.008 MB uploadedwandb: 🚀 View run bilevel_minimax-SST2-0-roberta-base-OPTIM_prompt-STEP-1-adamw-LR5e-05-constant-ZOEPS0.001-Q1-LowerLR0.001-LowerSTEPS3 at: https://wandb.ai/pyu123/zo-bench/runs/erb3nf0x
+wandb: ️⚡ View job at https://wandb.ai/pyu123/zo-bench/jobs/QXJ0aWZhY3RDb2xsZWN0aW9uOjMyNTA3NjI2MQ==/version_details/v1
+wandb: Synced 6 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20240726_214149-erb3nf0x/logs
