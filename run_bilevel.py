@@ -1,4 +1,5 @@
 import argparse
+import copy
 import os
 import random
 
@@ -21,11 +22,11 @@ from modeling_mistral import (
     MistralConfig
 )
 from tasks import get_task
-from trainer import OurTrainer
+# from trainer import OurTrainer
 from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
 from utils import *
 
-os.environ["TRANSFORMERS_CACHE"] = "./cache"
+# os.environ["TRANSFORMERS_CACHE"] = "./cache"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ AutoConfig.register("mistral", MistralConfig)
 AutoModelForCausalLM.register(MistralConfig, MistralForCausalLM)
 
 
-os.environ["HF_DATASETS_CACHE"] = "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/data"
+# os.environ["HF_DATASETS_CACHE"] = "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/data"
 
 @dataclass
 class OurArguments(TrainingArguments):
@@ -67,7 +68,7 @@ class OurArguments(TrainingArguments):
     template_ver: int = 0  # template. For some tasks (SST2, RTE, Copa), we add template ver=1 as the empty template.
 
     # Training
-    trainer: str = "bilevel_minimax" # 
+    trainer: str = "bilevel_minimax"  #
     ## options
     ## - none: no training -- for zero-shot or in-context learning (ICL)
     ## - regular: regular huggingface trainer -- for fine-tuning
@@ -86,13 +87,13 @@ class OurArguments(TrainingArguments):
     train_as_classification: bool = False  # take the log likelihood of all options and train as classification
     momentum: float = 0.0  # only work for SGD optimizer
 
-    #training arguments for the lower lever problem
+    # training arguments for the lower lever problem
     lower_level_learning_rate: float = 1e-3
-    lower_level_per_device_train_batch_size: int = 8 # 32
-    lower_level_per_device_eval_batch_size: int = 8 # 32
+    lower_level_per_device_train_batch_size: int = 8  # 32
+    lower_level_per_device_eval_batch_size: int = 8  # 32
     lower_level_num_train_epochs: int = 0.01
     lower_level_num_train_steps: int = 3
-    
+
     # MeZO
     zo_eps: float = 1e-3  # eps in MeZO
     perturbation_mode: str = "two_side"
@@ -167,12 +168,12 @@ def set_seed(seed: int):
 
 class Framework:
 
-    def __init__(self, args, task,lower_level_training_args):
-        self.lower_level_training_args=lower_level_training_args
+    def __init__(self, args, task, lower_level_training_args):
+        self.lower_level_training_args = lower_level_training_args
         self.args = args
         self.task = task
-        if self.args.trainer=="bilevel_minimax":
-           self.model, self.model_s, self.tokenizer =  self.load_model()        
+        if self.args.trainer == "bilevel_minimax":
+            self.model, self.model_s, self.tokenizer = self.load_model()
         else:
             self.model, self.tokenizer = self.load_model()
 
@@ -181,8 +182,8 @@ class Framework:
         Load HuggingFace models
         """
         with count_time("Loading model with FP%d" % (16 if self.args.load_float16 else 32)):
-#            free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
-#            print(free_in_GB)
+            # free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024 ** 3)
+            #            print(free_in_GB)
             config = AutoConfig.from_pretrained(self.args.model_name)
             if self.args.untie_emb:
                 # Untie embeddings/LM head
@@ -202,8 +203,8 @@ class Framework:
                         config=config,
                         device_map='auto',
                         torch_dtype=torch_dtype,
-                        max_memory={i: f'{free_in_GB - 5}GB' for i in
-                                    range(torch.cuda.device_count())},
+                        # max_memory={i: f'{free_in_GB - 5}GB' for i in
+                        #             range(torch.cuda.device_count())},
                     )
                 elif "llama" in self.args.model_name.lower():
                     from modeling_llama import LlamaForCausalLMWithHeadTuning
@@ -212,8 +213,8 @@ class Framework:
                         config=config,
                         device_map='auto',
                         torch_dtype=torch_dtype,
-                        max_memory={i: f'{free_in_GB - 5}GB' for i in
-                                    range(torch.cuda.device_count())},
+                        # max_memory={i: f'{free_in_GB - 5}GB' for i in
+                        #             range(torch.cuda.device_count())},
                     )
                 elif "mistral" in self.args.model_name.lower():
                     from modeling_mistral import MistralForCausalLMWithHeadTuning
@@ -222,8 +223,8 @@ class Framework:
                         config=config,
                         device_map='auto',
                         torch_dtype=torch_dtype,
-                        max_memory={i: f'{free_in_GB - 5}GB' for i in
-                                    range(torch.cuda.device_count())},
+                        # max_memory={i: f'{free_in_GB - 5}GB' for i in
+                        #             range(torch.cuda.device_count())},
                     )
                 else:
                     raise NotImplementedError(f"Head tuning is not supported for {self.args.model_name}")
@@ -238,10 +239,11 @@ class Framework:
                 elif self.args.load_bfloat16:
                     torch_dtype = torch.bfloat16
                 model = AutoModelForCausalLM.from_pretrained(self.args.model_name, config=config, device_map='auto',
-                                                             torch_dtype=torch_dtype, load_in_8bit=self.args.load_int8, )
-                                                             # max_memory={i: f'{free_in_GB - 5}GB' for i in
-                                                             #             range(torch.cuda.device_count())},
-                                                             # load_in_8bit=self.args.load_int8, )
+                                                             torch_dtype=torch_dtype,
+                                                             load_in_8bit=self.args.load_int8, )
+                # max_memory={i: f'{free_in_GB - 5}GB' for i in
+                #             range(torch.cuda.device_count())},
+                # load_in_8bit=self.args.load_int8, )
             model.eval()
 
         # Load tokenizer
@@ -266,15 +268,19 @@ class Framework:
             LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16)
 
         if self.args.prompt_tuning:
-            
+
             print("Adding Prompt Tuning to model...")
             if self.args.trainer == "bilevel_minimax":
+
+
                 from prompt_tuning import PromptTuningModel_with_model
+                # set original model to a copy of the model
+                original_model = copy.deepcopy(model)
                 PromptTuningModel_s = PromptTuningModel_with_model(
-                model,
-                num_virtual_tokens=self.args.num_virtual_tokens,
-                init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
+                    model,
+                    num_virtual_tokens=self.args.num_virtual_tokens,
+                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
+                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
                 )
                 model_s = PromptTuningModel_s.model
 
@@ -284,10 +290,10 @@ class Framework:
                 ))
 
                 PromptTuningModel_org = PromptTuningModel_with_model(
-                model,
-                num_virtual_tokens=self.args.num_virtual_tokens,
-                init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
+                    original_model,
+                    num_virtual_tokens=self.args.num_virtual_tokens,
+                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
+                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
                 )
                 model = PromptTuningModel_org.model
                 print("Total/Trainable number of parameters in model: {}/{}".format(
@@ -297,11 +303,11 @@ class Framework:
             else:
                 from prompt_tuning import PromptTuning
                 PromptTuning(
-                model,
-                num_virtual_tokens=self.args.num_virtual_tokens,
-                init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
-            )
+                    model,
+                    num_virtual_tokens=self.args.num_virtual_tokens,
+                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
+                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
+                )
                 print("Total/Trainable number of parameters: {}/{}".format(
                     sum(p.numel() for p in model.parameters()),
                     sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -539,24 +545,23 @@ class Framework:
             collator = NondiffCollator
         else:
             collator = DataCollatorForTokenClassification
-        
 
         print(self.args)
         trainer = OurBilevelMinimaxTrainer(model=self.model,
-                             model_s = self.model_s,
-                             args=self.args,
-                             lower_level_training_args=self.lower_level_training_args,
-                             dev_dataset=train_dataset,
-                             train_dataset=dev_dataset,
-                             eval_dataset=eval_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                             eval_samples=eval_samples,
-                             dev_samples=dev_samples,
-                             evaluate_func=self.evaluate,
-                             ) #the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
+                                           model_s=self.model_s,
+                                           args=self.args,
+                                           lower_level_training_args=self.lower_level_training_args,
+                                           dev_dataset=train_dataset,
+                                           train_dataset=dev_dataset,
+                                           eval_dataset=eval_dataset,
+                                           tokenizer=self.tokenizer,
+                                           data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                           pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                               self.tokenizer, pad_to_multiple_of=8),
+                                           eval_samples=eval_samples,
+                                           dev_samples=dev_samples,
+                                           evaluate_func=self.evaluate,
+                                           )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
         if self.args.save_on_interrupt:
             trainer.add_callback(SIGUSR1Callback())
 
@@ -616,20 +621,19 @@ def result_file_tag(args):
 
 
 def main():
-    
     args = parse_args()
 
     lower_level_training_args = TrainingArguments(
         output_dir="lower_level_output/model",
-        learning_rate=args.lower_level_learning_rate, #1e-3
+        learning_rate=args.lower_level_learning_rate,  # 1e-3
         per_device_train_batch_size=args.lower_level_per_device_train_batch_size,
         per_device_eval_batch_size=args.lower_level_per_device_eval_batch_size,
         num_train_epochs=args.lower_level_num_train_epochs,
         max_steps=args.lower_level_num_train_steps,
         evaluation_strategy="no",
         save_strategy="no",
-        load_best_model_at_end=True, 
-        lr_scheduler_type = "constant",
+        load_best_model_at_end=True,
+        lr_scheduler_type="constant",
         seed=args.train_set_seed
     )
 
@@ -650,7 +654,7 @@ def main():
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
 
-    wandb.init(project='zo-bench', entity='pyu123', name=args.tag, config=args)
+    wandb.init(project='zo-bench', entity='rezashkv', name=args.tag, config=args)
 
     set_seed(args.seed)
     task = get_task(args.task_name)
@@ -661,7 +665,7 @@ def main():
                                         num_train_sets=args.num_train_sets, seed=args.train_set_seed)
 
     # Initialize trainer and load model
-    framework = Framework(args, task,lower_level_training_args)
+    framework = Framework(args, task, lower_level_training_args)
 
     # ZO-Bench Added
     # We add these parameters to evaluate the model during the training.
