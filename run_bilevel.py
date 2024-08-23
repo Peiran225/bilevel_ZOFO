@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import copy
 
 import wandb
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
@@ -23,6 +24,7 @@ from modeling_mistral import (
 from tasks import get_task
 from trainer import OurTrainer
 from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
+from bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
 from utils import *
 
 os.environ["TRANSFORMERS_CACHE"] = "./cache"
@@ -45,15 +47,15 @@ class OurArguments(TrainingArguments):
     task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
 
     # Number of examples
-    num_train: int = 67349  # ICL mode: number of demonstrations; training mode: number of training samples. SST2 total 67349
-    num_dev: int = 872  # (only enabled with training) number of development samples. SST2 872
+    num_train: int = 67329  # ICL mode: number of demonstrations; training mode: number of training samples. SST2 total 67349
+    num_dev: int = 20  # (only enabled with training) number of development samples. SST2 872
     num_eval: int = 1821  # number of evaluation samples SST2 1821
     num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None, then we will sample one set for each evaluation sample
     train_set_seed: int = 0  # designated seed to sample training samples/demos
     result_file: str = None  # file name for saving performance; if None, then use the task name, model name, and config
 
     # Model loading
-    model_name: str = "FacebookAI/roberta-base"  # HuggingFace model name "facebook/opt-125m"
+    model_name: str = "facebook/opt-125m"   # HuggingFace model name "facebook/opt-125m"
     load_float16: bool = False  # load model parameters as float16
     load_bfloat16: bool = False  # load model parameters as bfloat16
     load_int8: bool = False  # load model parameters as int8
@@ -67,6 +69,7 @@ class OurArguments(TrainingArguments):
     template_ver: int = 0  # template. For some tasks (SST2, RTE, Copa), we add template ver=1 as the empty template.
 
     # Training
+    num_train_epochs: int = 1
     trainer: str = "bilevel_minimax" # 
     ## options
     ## - none: no training -- for zero-shot or in-context learning (ICL)
@@ -87,11 +90,12 @@ class OurArguments(TrainingArguments):
     momentum: float = 0.0  # only work for SGD optimizer
 
     #training arguments for the lower lever problem
+    Lambda: float = 0
     lower_level_learning_rate: float = 1e-3
     lower_level_per_device_train_batch_size: int = 8 # 32
     lower_level_per_device_eval_batch_size: int = 8 # 32
     lower_level_num_train_epochs: int = 0.01
-    lower_level_num_train_steps: int = 3
+    lower_level_num_train_steps: int = 0
     
     # MeZO
     zo_eps: float = 1e-3  # eps in MeZO
@@ -148,7 +152,7 @@ class OurArguments(TrainingArguments):
     clean_model_at_end: bool = True  # remove everthing at the end.
 
     # evaluation every eval_step
-    eval_steps: int = 1
+    eval_steps: int = 10
 
 
 def parse_args():
@@ -270,11 +274,12 @@ class Framework:
             print("Adding Prompt Tuning to model...")
             if self.args.trainer == "bilevel_minimax":
                 from prompt_tuning import PromptTuningModel_with_model
+                original_model = copy.deepcopy(model)
                 PromptTuningModel_s = PromptTuningModel_with_model(
-                model,
-                num_virtual_tokens=self.args.num_virtual_tokens,
-                init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
+                    model,
+                    num_virtual_tokens=self.args.num_virtual_tokens,
+                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
+                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
                 )
                 model_s = PromptTuningModel_s.model
 
@@ -284,10 +289,10 @@ class Framework:
                 ))
 
                 PromptTuningModel_org = PromptTuningModel_with_model(
-                model,
-                num_virtual_tokens=self.args.num_virtual_tokens,
-                init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
+                    original_model,
+                    num_virtual_tokens=self.args.num_virtual_tokens,
+                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
+                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
                 )
                 model = PromptTuningModel_org.model
                 print("Total/Trainable number of parameters in model: {}/{}".format(
@@ -542,12 +547,13 @@ class Framework:
         
 
         print(self.args)
-        trainer = OurBilevelMinimaxTrainer(model=self.model,
+        if self.args.trainer=="bilevel_minimax":
+            trainer = OurBilevelMinimaxTrainer(model=self.model,
                              model_s = self.model_s,
                              args=self.args,
                              lower_level_training_args=self.lower_level_training_args,
-                             dev_dataset=train_dataset,
-                             train_dataset=dev_dataset,
+                             lower_train_dataset=dev_dataset,
+                             train_dataset=train_dataset,
                              eval_dataset=eval_dataset,
                              tokenizer=self.tokenizer,
                              data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
@@ -557,6 +563,52 @@ class Framework:
                              dev_samples=dev_samples,
                              evaluate_func=self.evaluate,
                              ) #the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
+        elif self.args.trainer=="bilevel_minimax_way2":
+            trainer = OurBilevelMinimaxTrainer2(model=self.model_s,
+                             model_p = self.model,
+                             args=self.args,
+                             train_dataset=train_dataset,
+                             eval_dataset=eval_dataset,
+                             dev_dataset=dev_dataset,
+                             tokenizer=self.tokenizer,
+                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                 self.tokenizer, pad_to_multiple_of=8),
+                             eval_samples=eval_samples,
+                             dev_samples=dev_samples,
+                             evaluate_func=self.evaluate,
+                             )         
+        elif self.args.trainer=="bilevel_minimax_hyper_p":
+            trainer = OurBilevelMinimaxTrainer(model=self.model,
+                             model_s = self.model_s,
+                             args=self.args,
+                             lower_level_training_args=self.lower_level_training_args,
+                             lower_train_dataset=dev_dataset,
+                             train_dataset=train_dataset,
+                             eval_dataset=eval_dataset,
+                             tokenizer=self.tokenizer,
+                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                 self.tokenizer, pad_to_multiple_of=8),
+                             eval_samples=eval_samples,
+                             dev_samples=dev_samples,
+                             evaluate_func=self.evaluate,
+                             ) 
+        else:
+            trainer = OurTrainer(model=self.model,
+                             args=self.args,
+                             train_dataset=train_dataset,
+                             eval_dataset=eval_dataset,
+                             tokenizer=self.tokenizer,
+                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                 self.tokenizer, pad_to_multiple_of=8),
+                             eval_samples=eval_samples,
+                             dev_samples=dev_samples,
+                             evaluate_func=self.evaluate,
+                             )
+
+        
         if self.args.save_on_interrupt:
             trainer.add_callback(SIGUSR1Callback())
 
@@ -641,7 +693,12 @@ def main():
         args.mode = "prompt"
     else:
         args.mode = "ft"
-    args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerLR{args.lower_level_learning_rate}-LowerSTEPS{args.lower_level_num_train_steps}"
+    if args.trainer=="bilevel_minimax":
+        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerLR{args.lower_level_learning_rate}-LowerSTEPS{args.lower_level_num_train_steps}"
+    else:
+        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}"
+    
+        
     args.tag = "momen" + args.tag if args.momentum > 0 else args.tag
     args.run_name = args.tag
     args.output_dir = f"result/{args.tag}"
