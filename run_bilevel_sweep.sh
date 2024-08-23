@@ -18,5 +18,3 @@
 
 
 cd /fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/ZO-LLM/zo-bench
-
-wandb agent pyu123/zo-bench/pgmd1847
