@@ -23,7 +23,7 @@ from modeling_mistral import (
     MistralConfig
 )
 from tasks import get_task
-# from trainer import OurTrainer
+from trainer import OurTrainer
 from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
 from bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
 from utils import *
@@ -48,9 +48,9 @@ class OurArguments(TrainingArguments):
     task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
 
     # Number of examples
-    num_train: int = 67329  # ICL mode: number of demonstrations; training mode: number of training samples. SST2 total 67349
-    num_dev: int = 20  # (only enabled with training) number of development samples. SST2 872
-    num_eval: int = 1821  # number of evaluation samples SST2 1821
+    num_train: int = 1000  # ICL mode: number of demonstrations; training mode: number of training samples. SST2 total 67349
+    num_dev: int = 800  # (only enabled with training) number of development samples. SST2 872
+    num_eval: int = 1000  # number of evaluation samples SST2 1821
     num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None, then we will sample one set for each evaluation sample
     train_set_seed: int = 0  # designated seed to sample training samples/demos
     result_file: str = None  # file name for saving performance; if None, then use the task name, model name, and config
@@ -70,8 +70,8 @@ class OurArguments(TrainingArguments):
     template_ver: int = 0  # template. For some tasks (SST2, RTE, Copa), we add template ver=1 as the empty template.
 
     # Training
-    num_train_epochs: int = 1
-    trainer: str = "bilevel_minimax" # 
+    num_train_epochs: int = 5
+    trainer: str = "bilevel_minimax2" # 
     ## options
     ## - none: no training -- for zero-shot or in-context learning (ICL)
     ## - regular: regular huggingface trainer -- for fine-tuning
@@ -93,10 +93,10 @@ class OurArguments(TrainingArguments):
     #training arguments for the lower lever problem
     Lambda: float = 0
     lower_level_learning_rate: float = 1e-3
-    lower_level_per_device_train_batch_size: int = 8  # 32
-    lower_level_per_device_eval_batch_size: int = 8  # 32
+    lower_level_per_device_train_batch_size: int = 16  # 32
+    lower_level_per_device_eval_batch_size: int = 16  # 32
     lower_level_num_train_epochs: int = 0.01
-    lower_level_num_train_steps: int = 0
+    lower_level_num_train_steps: int = 1
     
     # MeZO
     zo_eps: float = 1e-3  # eps in MeZO
@@ -112,7 +112,7 @@ class OurArguments(TrainingArguments):
     # prompt tuning hyperparameters
     prompt_tuning: bool = True  # whether to use prompt tuning
     num_virtual_tokens: int = 10  # number of prompt tokens to use
-    prompt_init_by_real_tokens: bool = False  # whether to sample random tokens from Embedding layer
+    prompt_init_by_real_tokens: bool = True  # whether to sample random tokens from Embedding layer
 
     # LoRA
     lora: bool = False  # whether to use LoRA
@@ -176,7 +176,7 @@ class Framework:
         self.lower_level_training_args = lower_level_training_args
         self.args = args
         self.task = task
-        if self.args.trainer == "bilevel_minimax":
+        if "bilevel_minimax" in self.args.trainer:
             self.model, self.model_s, self.tokenizer = self.load_model()
         else:
             self.model, self.tokenizer = self.load_model()
@@ -274,7 +274,7 @@ class Framework:
         if self.args.prompt_tuning:
 
             print("Adding Prompt Tuning to model...")
-            if self.args.trainer == "bilevel_minimax":
+            if "bilevel_minimax" in self.args.trainer:
 
 
                 from prompt_tuning import PromptTuningModel_with_model
@@ -327,7 +327,7 @@ class Framework:
                 else:
                     logger.info(f"Only tuning {n}")
 
-        if self.args.trainer == "bilevel_minimax":
+        if "bilevel_minimax" in self.args.trainer:
             return model, model_s, tokenizer
         else:
             return model, tokenizer
@@ -543,6 +543,11 @@ class Framework:
             # If --only_train_option and not with a non-differentiable objective, we wrap the forward function
             self.model.original_forward = self.model.forward
             self.model.forward = forward_wrap_with_option_len.__get__(self.model, type(self.model))
+            if "bilevel_minimax" in self.args.trainer:
+                self.model_s.original_forward = self.model_s.forward
+                self.model_s.forward = forward_wrap_with_option_len.__get__(self.model_s, type(self.model_s))
+
+
 
         if self.args.non_diff:
             collator = NondiffCollator
@@ -566,7 +571,7 @@ class Framework:
                              dev_samples=dev_samples,
                              evaluate_func=self.evaluate,
                              ) #the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
-        elif self.args.trainer=="bilevel_minimax_way2":
+        elif self.args.trainer=="bilevel_minimax2":
             trainer = OurBilevelMinimaxTrainer2(model=self.model_s,
                              model_p = self.model,
                              args=self.args,
@@ -578,7 +583,6 @@ class Framework:
                                                                              pad_to_multiple_of=8) if self.args.train_as_classification else collator(
                                  self.tokenizer, pad_to_multiple_of=8),
                              eval_samples=eval_samples,
-                             dev_samples=dev_samples,
                              evaluate_func=self.evaluate,
                              )         
         elif self.args.trainer=="bilevel_minimax_hyper_p":
@@ -695,8 +699,8 @@ def main():
         args.mode = "prompt"
     else:
         args.mode = "ft"
-    if args.trainer=="bilevel_minimax":
-        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerLR{args.lower_level_learning_rate}-LowerSTEPS{args.lower_level_num_train_steps}"
+    if "bilevel_minimax" in args.trainer:
+        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerSTEPS{args.lower_level_num_train_steps}"
     else:
         args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}"
     
@@ -709,7 +713,7 @@ def main():
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
 
-    wandb.init(project='zo-bench', entity='rezashkv', name=args.tag, config=args)
+    wandb.init(project='zo-bench', entity="pyu123", name=args.tag, config=args)
 
     set_seed(args.seed)
     task = get_task(args.task_name)

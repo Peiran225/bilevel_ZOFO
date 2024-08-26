@@ -61,6 +61,7 @@ from transformers.trainer_utils import (
     TrainOutput,
     has_length,
     speed_metrics,
+    seed_worker,
 )
 from transformers.utils import (
     WEIGHTS_NAME,
@@ -68,8 +69,13 @@ from transformers.utils import (
     is_in_notebook,
     is_sagemaker_mp_enabled,
     is_torch_tpu_available,
+    is_datasets_available,
     logging,
 )
+
+
+if is_datasets_available():
+    import datasets
 
 # from torch.optim.optimizer import StateDict, params_t
 import wandb
@@ -117,13 +123,13 @@ SCHEDULER_NAME = "scheduler.pt"
 SCALER_NAME = "scaler.pt"
 
 
-class OurBilevelMiniaxTrainer2(Trainer):
+class OurBilevelMinimaxTrainer2(Trainer):
 
     # ZO-Bench added: new parameters to our traininer
-    def __init__(self, model_p, evaluate_func, dev_samples, eval_samples, *args, **kwargs):
+    def __init__(self, model_p, evaluate_func, dev_dataset, eval_samples, *args, **kwargs):
         super().__init__(*args, **kwargs)  # Initialize the base class
         self.evaluate_func = evaluate_func
-        self.dev_samples = dev_samples
+        self.dev_dataset = dev_dataset
         self.eval_samples = eval_samples
         self.model_p = model_p
 
@@ -137,7 +143,9 @@ class OurBilevelMiniaxTrainer2(Trainer):
         self._train_batch_size = batch_size
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
-        eval_dataloader = self.get_eval_dataloader()  # ----newly-added
+        train_iterator = iter(train_dataloader)
+        first_batch = next(train_iterator)
+        eval_dataloader = self.get_eval_dataloader()  
         dev_dataloader = self.get_dev_dataloader()
 
         # MeZO added: Linear probing
@@ -525,25 +533,23 @@ class OurBilevelMiniaxTrainer2(Trainer):
 
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1) / steps_in_epoch
-
-                    # check whether to do upper level update:
-                    if (total_steps + 1) % self.args.lower_level_steps == 0:
-                        print('perform the outer loop')
-                        inputs_f = next(dev_iterator)
-                        inputs_p= next(train_iterator_p)
-                        self.bilevel_outer_p_step(self.model_p, model, inputs_f, inputs_p)
-                        # update p
-                        self.gradient_update(self.model_p) # same optimizer.step() with the inner loop
-                        # update theta
-                        _ = self.bilevel_upper_theta_step(self.model_p, model, inputs_f, inputs_p)
-
-
-
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
 
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+
+
+                # check whether to do upper level update:
+                if (total_steps + 1) % self.args.lower_level_num_train_steps == 0:
+                    print('perform the outer loop')
+                    inputs_f = next(dev_iterator)
+                    inputs_p= next(train_iterator_p)
+                    self.bilevel_outer_p_step(self.model_p, model, inputs_f, inputs_p)
+                    # update p
+                    self.gradient_update(self.model_p) # same optimizer.step() with the inner loop
+                    # update theta
+                    _ = self.bilevel_upper_theta_step(self.model_p, model, inputs_f, inputs_p)
 
                 # torch.cuda.synchronize()
                 train_step_duration = time.time() - step_start_time
@@ -554,17 +560,17 @@ class OurBilevelMiniaxTrainer2(Trainer):
                 if self.args.eval_steps is not None and (total_steps + 1) % self.args.eval_steps == 0:
                     print(
                         f"=========================> Evaluating at step {total_steps + 1}... <=========================")
-                    val_metrics = self.evaluate_func([], self.dev_samples)
+                    # val_metrics = self.evaluate_func([], self.dev_samples)
                     test_metrics = self.evaluate_func([], self.eval_samples)
                     if "accuracy" in test_metrics:
-                        self.log({"test_acc": test_metrics["accuracy"], "val_acc": val_metrics["accuracy"]})
-                        wandb.log({"test_acc": test_metrics["accuracy"], "val_acc": val_metrics["accuracy"]})
+                        self.log({"test_acc": test_metrics["accuracy"]}) #, "val_acc": val_metrics["accuracy"]})
+                        wandb.log({"test_acc": test_metrics["accuracy"]}) # , "val_acc": val_metrics["accuracy"]})
                     else:
                         keys = list(test_metrics.keys())
                         log_dict = {}
                         for k in keys:
                             log_dict['test_' + k] = test_metrics[k]
-                            log_dict['val_' + k] = val_metrics[k]
+                            # log_dict['val_' + k] = val_metrics[k]
                         self.log(log_dict)
                         wandb.log(log_dict)
 
@@ -655,13 +661,14 @@ class OurBilevelMiniaxTrainer2(Trainer):
     
     def bilevel_outer_p_step(self, model_p, model, inputs_f, inputs_p):
         model.train()
+        model_p.train()
         
 
-        inputs = self._prepare_inputs(inputs)
+        inputs_p = self._prepare_inputs(inputs_p)
         inputs_f = self._prepare_inputs(inputs_f)
 
         if is_sagemaker_mp_enabled():
-            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            loss_mb = smp_forward_backward(model, inputs_p, self.args.gradient_accumulation_steps)
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
         with self.compute_loss_context_manager():
@@ -670,34 +677,49 @@ class OurBilevelMiniaxTrainer2(Trainer):
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
+        if self.args.gradient_accumulation_steps > 1 and not self.deepspeed:
+                    # deepspeed handles loss scaling by gradient_accumulation_steps in its `backward`
+                    loss = loss / self.args.gradient_accumulation_steps
+
         if self.do_grad_scaling:
             self.scaler.scale(loss).backward()
         elif self.use_apex:
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
+        elif self.deepspeed:
+            # loss gets scaled under gradient_accumulation_steps in deepspeed
+            loss = self.deepspeed.backward(loss)
         else:
-            self.accelerator.backward(loss)
+            loss.backward()
 
-        return loss.detach() / self.args.gradient_accumulation_steps
+        return loss.detach()
     
     # @torch.no_grad()
     def bilevel_upper_theta_step(self, model_p, model, inputs_f, inputs_p):
         """
         Estimate gradient of the outer loss and update the parameters. Return the loss from f(theta + z)
         """
+
         args = self.args
 
-        ##### calculate the SPSA ######
-        # self.named_parameters_to_optim_full = []
-        # for name, param in model.named_parameters():
-        #     if "prompt_encoder" in name:
-        #         param.requires_grad = False
-        #     elif param.requires_grad:
-        #         param.requires_grad = True
-        #         self.named_parameters_to_optim_full.append((name, param))
-        #         # # TODO avoid init the memory for grad.
-        #         # param.grad = torch.zeros_like(param.data)
-        #         param.grad = None  # Make sure the grad is empty and will not be updated.
+        # What parameters to optimize
+        self.named_parameters_to_optim = []
+        pppp=0
+        for name, param in model.named_parameters():
+            if param.requires_grad==False:
+                pppp=1
+                param.requires_grad=True
+                self.named_parameters_to_optim.append((name, param))
+                # # TODO avoid init the memory for grad.
+                # param.grad = torch.zeros_like(param.data)
+                param.grad = None  # Make sure the grad is empty and will not be updated.
+            else:
+                param.requires_grad=False
+
+        # print("Trainable number of parameters in model: {}".format(
+        #         sum(p.numel() for p in model.parameters() if p.requires_grad),
+        #     ))
+        
 
         # Sample the random seed for sampling z
         self.zo_random_seed = np.random.randint(1000000000)
@@ -719,20 +741,29 @@ class OurBilevelMiniaxTrainer2(Trainer):
             # Set the random seed to ensure that we sample the same z for perturbation/update
             torch.manual_seed(self.zo_random_seed)
             # update theta
-            for name, param in self.model.named_parameters():
-                if "prompt_encoder" not in name:
-                    param.require_grad = True
-                    param.grad = None # Make sure the grad is empty and will not be updated.
+            for name, param in self.named_parameters_to_optim:
+                param.grad = None # Make sure the grad is empty and will not be updated.
                     # Resample z
-                    z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device,
-                                    dtype=param.data.dtype)
+                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device,
+                                dtype=param.data.dtype)
 
-                    graddiff_times_z = self.projected_grad * z
+                graddiff_times_z = self.projected_grad * z
 
-                    param.grad = graddiff_times_z / args.q  # NOTE this q division does not work for q>1.
-                    self.optimizer.step()  # will only update grad that is not None.                
-                    param.grad = None  # avoid further update.
-                    param.require_grad = False
+                param.grad = graddiff_times_z / args.q  # NOTE this q division does not work for q>1.
+                            
+                 
+
+        self.optimizer.step()  # will only update grad that is not None.  
+
+        for name, param in model.named_parameters():
+            if param.requires_grad==False:
+                param.requires_grad=True
+            else:
+                param.requires_grad=False 
+        # print("Total/Trainable number of parameters in model: {}/{}".format(
+        #         sum(p.numel() for p in model.parameters()),
+        #         sum(p.numel() for p in model.parameters() if p.requires_grad),
+        #     ))
 
             
 
@@ -843,7 +874,8 @@ class OurBilevelMiniaxTrainer2(Trainer):
         model.eval()
 
         with torch.inference_mode():
-            inputs = self._prepare_inputs(inputs)
+            inputs_p = self._prepare_inputs(inputs_p)
+            inputs_f = self._prepare_inputs(inputs_f)
             with self.compute_loss_context_manager():
                 loss = self.compute_upper_loss(model_p, model, inputs_f, inputs_p)
             if self.args.n_gpu > 1:
@@ -1388,3 +1420,54 @@ class OurBilevelMiniaxTrainer2(Trainer):
         # Push to the Hub when `save_model` is called by the user.
         if self.args.push_to_hub and not _internal_call:
             self.push_to_hub(commit_message="Model save")
+
+    def get_dev_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`].
+
+        Will use no sampler if `train_dataset` does not implement `__len__`, a random sampler (adapted to distributed
+        training if necessary) otherwise.
+
+        Subclass and override this method if you want to inject some custom behavior.
+        """
+        if self.dev_dataset is None:
+            raise ValueError("Trainer: upper level train requires a dev_dataset.")
+
+        dev_dataset = self.dev_dataset
+        data_collator = self.data_collator
+        if is_datasets_available() and isinstance(dev_dataset, datasets.Dataset):
+            dev_dataset = self._remove_unused_columns(dev_dataset, description="training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
+
+        if isinstance(dev_dataset, torch.utils.data.IterableDataset):
+            if self.args.world_size > 1:
+                dev_dataset = IterableDatasetShard(
+                    dev_dataset,
+                    batch_size=self._train_batch_size,
+                    drop_last=self.args.dataloader_drop_last,
+                    num_processes=self.args.world_size,
+                    process_index=self.args.process_index,
+                )
+
+            return DataLoader(
+                dev_dataset,
+                batch_size=self._train_batch_size,
+                collate_fn=data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+            )
+
+        dev_sampler = self._get_eval_sampler(dev_dataset)
+
+        return DataLoader(
+            dev_dataset,
+            batch_size=self._train_batch_size,
+            sampler=dev_sampler,
+            collate_fn=data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            worker_init_fn=seed_worker,
+        )
+
