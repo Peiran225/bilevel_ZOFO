@@ -717,7 +717,6 @@ class OurBilevelMinimaxTrainer2(Trainer):
         args = self.args
 
         # What parameters to optimize
-        self.named_parameters_for_zo_step = []
         if self.args.prompt_tuning:
             addtional_parameter_name = "prompt_encoder"
         elif self.args.lora:
@@ -758,7 +757,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
             # Set the random seed to ensure that we sample the same z for perturbation/update
             torch.manual_seed(self.zo_random_seed)
             # update theta
-            for name, param in self.named_parameters_for_zo_step:
+            for name, param in named_parameters_for_zo_step:
                 param.grad = None # Make sure the grad is empty and will not be updated.
                     # Resample z
                 z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device,
