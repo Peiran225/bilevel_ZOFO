@@ -42,21 +42,19 @@ AutoModelForCausalLM.register(MistralConfig, MistralForCausalLM)
 
 @dataclass
 class OurArguments(TrainingArguments):
-    output_dir: str = "upper_level_bilevel/model"
-    lr_scheduler_type: str = 'constant'
     # dataset and sampling strategy
     task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
-
+    lr_scheduler_type: str = 'constant'    
     # Number of examples
-    num_train: int = 1000  # ICL mode: number of demonstrations; training mode: number of training samples. SST2 total 67349
-    num_dev: int = 800  # (only enabled with training) number of development samples. SST2 872
-    num_eval: int = 1000  # number of evaluation samples SST2 1821
+    num_train: int = 0  # ICL mode: number of demonstrations; training mode: number of training samples
+    num_dev: int = None  # (only enabled with training) number of development samples
+    num_eval: int = None  # number of evaluation samples
     num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None, then we will sample one set for each evaluation sample
     train_set_seed: int = 0  # designated seed to sample training samples/demos
     result_file: str = None  # file name for saving performance; if None, then use the task name, model name, and config
 
     # Model loading
-    model_name: str = "facebook/opt-125m"   # HuggingFace model name "facebook/opt-125m"
+    model_name: str = "facebook/opt-125m"  # HuggingFace model name
     load_float16: bool = False  # load model parameters as float16
     load_bfloat16: bool = False  # load model parameters as bfloat16
     load_int8: bool = False  # load model parameters as int8
@@ -70,8 +68,7 @@ class OurArguments(TrainingArguments):
     template_ver: int = 0  # template. For some tasks (SST2, RTE, Copa), we add template ver=1 as the empty template.
 
     # Training
-    num_train_epochs: int = 5
-    trainer: str = "bilevel_minimax2" # 
+    trainer: str = "none"
     ## options
     ## - none: no training -- for zero-shot or in-context learning (ICL)
     ## - regular: regular huggingface trainer -- for fine-tuning
@@ -80,7 +77,7 @@ class OurArguments(TrainingArguments):
     ## - zo_adam: zeroth-order Adam training
     ## - zo_sign_opt: zeroth-order sign sgd training
     ## - forward_grad: forward gradient
-    ## - bilevel: ZO fine tuning + FO prompt tuning
+    ## - bilevel_minimax2
     optimizer: str = "adamw"
     ## options
     ## - sgd
@@ -90,14 +87,6 @@ class OurArguments(TrainingArguments):
     train_as_classification: bool = False  # take the log likelihood of all options and train as classification
     momentum: float = 0.0  # only work for SGD optimizer
 
-    #training arguments for the lower lever problem
-    Lambda: float = 0
-    lower_level_learning_rate: float = 1e-3
-    lower_level_per_device_train_batch_size: int = 16  # 32
-    lower_level_per_device_eval_batch_size: int = 16  # 32
-    lower_level_num_train_epochs: int = 0.01
-    lower_level_num_train_steps: int = 1
-    
     # MeZO
     zo_eps: float = 1e-3  # eps in MeZO
     perturbation_mode: str = "two_side"
@@ -110,9 +99,9 @@ class OurArguments(TrainingArguments):
     prefix_init_by_real_act: bool = True  # initialize prefix by real activations of random words
 
     # prompt tuning hyperparameters
-    prompt_tuning: bool = True  # whether to use prompt tuning
+    prompt_tuning: bool = False  # whether to use prompt tuning
     num_virtual_tokens: int = 10  # number of prompt tokens to use
-    prompt_init_by_real_tokens: bool = True  # whether to sample random tokens from Embedding layer
+    prompt_init_by_real_tokens: bool = False  # whether to sample random tokens from Embedding layer
 
     # LoRA
     lora: bool = False  # whether to use LoRA
@@ -152,8 +141,42 @@ class OurArguments(TrainingArguments):
 
     clean_model_at_end: bool = True  # remove everthing at the end.
 
+    # sparse gradient pruning
+    gradient_sparsity: float = None
+    sparse_gradient_resample_steps: int = 1
+    sparse_gradient_group: str = "layer"
+    """
+    Options
+    ## - global: global sparsity will assign different sparsity to each layer, based on the pretrained weight magnitude
+    ## - layer: each layer has the same sparsity
+    """
+
+    # module-wise perturbation
+    module_wise_perturbation: bool = False
+    perturbed_module_level: str = "transformer-block"
+    coordinate_perturbation: bool = True  # If True, will update weight right after the gradient is computed
+    """
+    Options
+    ## - transformer-block: perturb one transformer block at a time
+    ## - mlp-attn: perturb one mlp/attention layer at a time
+    ## - linear: perturb one linear layer at a time
+    """
+
     # evaluation every eval_step
-    eval_steps: int = 10
+    # eval_steps: int = 10
+
+    #training arguments for the bilevel problem
+    Lambda: float = 0
+    lower_level_num_train_steps: int = 1
+    lower_level_learning_rate:  float = 1e-3
+    lower_level_per_device_train_batch_size: int = 1
+    lower_level_per_device_eval_batch_size: int = 1
+    lower_level_num_train_epochs: int = 1
+    upper_optimizer: str = "sgd" # sgd/adam
+    upper_learning_rate: float = 1e-9
+    upper_momentum: float = 0.0
+
+    
 
 
 def parse_args():
@@ -172,12 +195,12 @@ def set_seed(seed: int):
 
 class Framework:
 
-    def __init__(self, args, task, lower_level_training_args):
-        self.lower_level_training_args = lower_level_training_args
+    def __init__(self, args, task):
+        
         self.args = args
         self.task = task
         if "bilevel_minimax" in self.args.trainer:
-            self.model, self.model_s, self.tokenizer = self.load_model()
+            self.model_p, self.model, self.tokenizer = self.load_model()
         else:
             self.model, self.tokenizer = self.load_model()
 
@@ -544,8 +567,8 @@ class Framework:
             self.model.original_forward = self.model.forward
             self.model.forward = forward_wrap_with_option_len.__get__(self.model, type(self.model))
             if "bilevel_minimax" in self.args.trainer:
-                self.model_s.original_forward = self.model_s.forward
-                self.model_s.forward = forward_wrap_with_option_len.__get__(self.model_s, type(self.model_s))
+                self.model_p.original_forward = self.model_p.forward
+                self.model_p.forward = forward_wrap_with_option_len.__get__(self.model_p, type(self.model_p))
 
 
 
@@ -556,6 +579,19 @@ class Framework:
 
         print(self.args)
         if self.args.trainer=="bilevel_minimax":
+            self.lower_level_training_args = TrainingArguments(
+                            output_dir="lower_level_output/model",
+                            learning_rate=self.args.lower_level_learning_rate,  # 1e-3
+                            per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
+                            per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
+                            num_train_epochs=self.args.lower_level_num_train_epochs,
+                            max_steps=self.args.lower_level_num_train_steps,
+                            evaluation_strategy="no",
+                            save_strategy="no",
+                            load_best_model_at_end=True,
+                            lr_scheduler_type="constant",
+                            seed=self.args.train_set_seed
+                        )
             trainer = OurBilevelMinimaxTrainer(model=self.model,
                              model_s = self.model_s,
                              args=self.args,
@@ -572,8 +608,8 @@ class Framework:
                              evaluate_func=self.evaluate,
                              ) #the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
         elif self.args.trainer=="bilevel_minimax2":
-            trainer = OurBilevelMinimaxTrainer2(model=self.model_s,
-                             model_p = self.model,
+            trainer = OurBilevelMinimaxTrainer2(model=self.model,
+                             model_p = self.model_p,
                              args=self.args,
                              train_dataset=train_dataset,
                              eval_dataset=eval_dataset,
@@ -677,19 +713,7 @@ def result_file_tag(args):
 def main():
     args = parse_args()
 
-    lower_level_training_args = TrainingArguments(
-        output_dir="lower_level_output/model",
-        learning_rate=args.lower_level_learning_rate,  # 1e-3
-        per_device_train_batch_size=args.lower_level_per_device_train_batch_size,
-        per_device_eval_batch_size=args.lower_level_per_device_eval_batch_size,
-        num_train_epochs=args.lower_level_num_train_epochs,
-        max_steps=args.lower_level_num_train_steps,
-        evaluation_strategy="no",
-        save_strategy="no",
-        load_best_model_at_end=True,
-        lr_scheduler_type="constant",
-        seed=args.train_set_seed
-    )
+    
 
     if args.prefix_tuning:
         args.mode = "prefix"
@@ -700,7 +724,7 @@ def main():
     else:
         args.mode = "ft"
     if "bilevel_minimax" in args.trainer:
-        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerSTEPS{args.lower_level_num_train_steps}"
+        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerSTEPS{args.lower_level_num_train_steps}-UpperLr{args.upper_learning_rate}-Lambda{args.Lambda}"
     else:
         args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}"
     
@@ -724,7 +748,7 @@ def main():
                                         num_train_sets=args.num_train_sets, seed=args.train_set_seed)
 
     # Initialize trainer and load model
-    framework = Framework(args, task, lower_level_training_args)
+    framework = Framework(args, task)
 
     # ZO-Bench Added
     # We add these parameters to evaluate the model during the training.

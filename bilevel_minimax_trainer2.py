@@ -329,6 +329,14 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 self.optimizer = Adam(self.model.parameters(), lr=args.learning_rate)
             elif args.optimizer == "sgd":
                 self.optimizer = SGD(self.model.parameters(), lr=args.learning_rate, momentum=args.momentum)
+        
+        if args.trainer == "bilevel_minimax2":
+            print("load the upper level optimizer")
+            # assert args.upper_lr_scheduler_type == 'constant', "we did not implement lr_schedule."
+            if args.upper_optimizer == "adam":
+                self.upper_optimizer = Adam(self.model_p.parameters(), lr=args.upper_learning_rate)
+            elif args.upper_optimizer == "sgd":
+                self.upper_optimizer = SGD(self.model_p.parameters(), lr=args.upper_learning_rate, momentum=args.upper_momentum)
 
         # important: at this point:
         # self.model         is the Transformers Model
@@ -543,14 +551,20 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 # check whether to do upper level update:
                 if (total_steps + 1) % self.args.lower_level_num_train_steps == 0:
                     print('perform the outer loop')
-                    inputs_f = next(dev_iterator)
-                    inputs_p= next(train_iterator_p)
-                    self.bilevel_outer_p_step(self.model_p, model, inputs_f, inputs_p)
-                    # update p
-                    self.gradient_update(self.model_p) # same optimizer.step() with the inner loop
-                    # update theta
-                    _ = self.bilevel_upper_theta_step(self.model_p, model, inputs_f, inputs_p)
-
+                    try:
+                        inputs_f = next(dev_iterator)
+                    except:
+                        dev_iterator = iter(dev_dataloader)
+            
+                    try:
+                        inputs_p= next(train_iterator_p)
+                    except:
+                        train_iterator_p = iter(train_dataloader)  
+                        
+                    self.compute_grad_p(self.model_p, model, inputs_f, inputs_p)
+                    self.compute_zo_grad_theta=(self.model_p, model, inputs_f, inputs_p)
+                    self.bilevel_upper_step(self.model_p)
+                    
                 # torch.cuda.synchronize()
                 train_step_duration = time.time() - step_start_time
 
@@ -659,7 +673,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
         upper_loss = self.compute_loss(model_p,inputs_f) + self.args.Lambda*(self.compute_loss(model_p, inputs_p) - self.compute_loss(model, inputs_p))
         return upper_loss
     
-    def bilevel_outer_p_step(self, model_p, model, inputs_f, inputs_p):
+    def compute_grad_p(self, model_p, model, inputs_f, inputs_p):
         model.train()
         model_p.train()
         
@@ -695,7 +709,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
         return loss.detach()
     
     # @torch.no_grad()
-    def bilevel_upper_theta_step(self, model_p, model, inputs_f, inputs_p):
+    def compute_zo_grad_theta(self, model_p, model, inputs_f, inputs_p):
         """
         Estimate gradient of the outer loss and update the parameters. Return the loss from f(theta + z)
         """
@@ -703,18 +717,21 @@ class OurBilevelMinimaxTrainer2(Trainer):
         args = self.args
 
         # What parameters to optimize
-        self.named_parameters_to_optim = []
-        pppp=0
+        self.named_parameters_for_zo_step = []
+        if self.args.prompt_tuning:
+            addtional_parameter_name = "prompt_encoder"
+        elif self.args.lora:
+             addtional_parameter_name = "lora"
+        elif self.args. prefix_tuning:
+            addtional_parameter_name = "prefix"
+        
+
+        named_parameters_for_zo_step = []
         for name, param in model.named_parameters():
-            if param.requires_grad==False:
-                pppp=1
+            if addtional_parameter_name not in name:
                 param.requires_grad=True
-                self.named_parameters_to_optim.append((name, param))
-                # # TODO avoid init the memory for grad.
-                # param.grad = torch.zeros_like(param.data)
-                param.grad = None  # Make sure the grad is empty and will not be updated.
-            else:
-                param.requires_grad=False
+                param.grad = None 
+                named_parameters_for_zo_step.append((name, param))
 
         # print("Trainable number of parameters in model: {}".format(
         #         sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -741,7 +758,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
             # Set the random seed to ensure that we sample the same z for perturbation/update
             torch.manual_seed(self.zo_random_seed)
             # update theta
-            for name, param in self.named_parameters_to_optim:
+            for name, param in self.named_parameters_for_zo_step:
                 param.grad = None # Make sure the grad is empty and will not be updated.
                     # Resample z
                 z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device,
@@ -750,36 +767,39 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 graddiff_times_z = self.projected_grad * z
 
                 param.grad = graddiff_times_z / args.q  # NOTE this q division does not work for q>1.
-                            
+        assert self.args.gradient_accumulation_steps == 1                    
                  
-
-        self.optimizer.step()  # will only update grad that is not None.  
-
-        for name, param in model.named_parameters():
-            if param.requires_grad==False:
-                param.requires_grad=True
-            else:
-                param.requires_grad=False 
-        # print("Total/Trainable number of parameters in model: {}/{}".format(
-        #         sum(p.numel() for p in model.parameters()),
-        #         sum(p.numel() for p in model.parameters() if p.requires_grad),
-        #     ))
-
-            
-
-          
+    def bilevel_upper_step(self,model):
+        self.upper_optimizer.step()  # will only update grad that is not None.  
+        model.zero_grad()
+        # set the grad for the fine tuned parametes theta false and update the theta in the lower level model 
+        self.named_parameters_for_zo_step = []
+        if self.args.prompt_tuning:
+            addtional_parameter_name = "prompt_encoder"
+        elif self.args.lora:
+             addtional_parameter_name = "lora"
+        elif self.args. prefix_tuning:
+            addtional_parameter_name = "prefix"
         
-        assert self.args.gradient_accumulation_steps == 1
+        for (name, param), (_, param_upper) in zip(self.model.named_parameters(),model.named_parameters()):
+            if addtional_parameter_name not in name:
+                param.data.copy_(param_upper.data) 
+                param_upper.requires_grad=False
+                param.requires_grad=False
 
-        return loss1
+        
+
+        
+
+        
+         
+        
+        
+
+       
 
 
 
-
-
-
-    # 
-    # ############## MeZO ##############
 
     def gradient_update(self, model):
         args = self.args
@@ -833,6 +853,12 @@ class OurBilevelMinimaxTrainer2(Trainer):
         if optimizer_was_run and not self.deepspeed:
             self.lr_scheduler.step()
         model.zero_grad()
+
+    
+
+
+    # 
+    # ############## MeZO ##############
 
     def zo_perturb_parameters(self, random_seed=None, scaling_factor=1):
         """
