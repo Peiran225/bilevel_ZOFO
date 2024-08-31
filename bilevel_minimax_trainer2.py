@@ -562,7 +562,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
                         train_iterator_p = iter(train_dataloader)  
                         
                     self.compute_grad_p(self.model_p, model, inputs_f, inputs_p)
-                    self.compute_zo_grad_theta=(self.model_p, model, inputs_f, inputs_p)
+                    self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
                     self.bilevel_upper_step(self.model_p)
                     
                 # torch.cuda.synchronize()
@@ -721,20 +721,20 @@ class OurBilevelMinimaxTrainer2(Trainer):
             addtional_parameter_name = "prompt_encoder"
         elif self.args.lora:
              addtional_parameter_name = "lora"
-        elif self.args. prefix_tuning:
+        elif self.args.prefix_tuning:
             addtional_parameter_name = "prefix"
         
 
-        named_parameters_for_zo_step = []
-        for name, param in model.named_parameters():
+        self.named_parameters_for_zo_step = []
+        for name, param in model_p.named_parameters():
             if addtional_parameter_name not in name:
                 param.requires_grad=True
                 param.grad = None 
-                named_parameters_for_zo_step.append((name, param))
+                self.named_parameters_for_zo_step.append((name, param))
 
-        # print("Trainable number of parameters in model: {}".format(
-        #         sum(p.numel() for p in model.parameters() if p.requires_grad),
-        #     ))
+        print("1. Trainable number of parameters in model_p: {}".format(
+                sum(p.numel() for p in model_p.parameters() if p.requires_grad),
+            ))
         
 
         # Sample the random seed for sampling z
@@ -757,7 +757,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
             # Set the random seed to ensure that we sample the same z for perturbation/update
             torch.manual_seed(self.zo_random_seed)
             # update theta
-            for name, param in named_parameters_for_zo_step:
+            for name, param in self.named_parameters_for_zo_step:
                 param.grad = None # Make sure the grad is empty and will not be updated.
                     # Resample z
                 z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device,
@@ -768,23 +768,41 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 param.grad = graddiff_times_z / args.q  # NOTE this q division does not work for q>1.
         assert self.args.gradient_accumulation_steps == 1                    
                  
-    def bilevel_upper_step(self,model):
+    def bilevel_upper_step(self,model_p):
         self.upper_optimizer.step()  # will only update grad that is not None.  
-        model.zero_grad()
+        
         # set the grad for the fine tuned parametes theta false and update the theta in the lower level model 
-        self.named_parameters_for_zo_step = []
         if self.args.prompt_tuning:
             addtional_parameter_name = "prompt_encoder"
         elif self.args.lora:
              addtional_parameter_name = "lora"
-        elif self.args. prefix_tuning:
+        elif self.args.prefix_tuning:
             addtional_parameter_name = "prefix"
+
         
-        for (name, param), (_, param_upper) in zip(self.model.named_parameters(),model.named_parameters()):
+        print("2. Trainable number of parameters in self.model: {}".format(
+                sum(p.numel() for p in self.model.parameters() if p.requires_grad),
+            ))
+        print("2. Trainable number of parameters in model_p: {}".format(
+                sum(p.numel() for p in model_p.parameters() if p.requires_grad),
+            ))
+        
+        for (name, param), (_, param_upper) in zip(self.model.named_parameters(),model_p.named_parameters()):
             if addtional_parameter_name not in name:
                 param.data.copy_(param_upper.data) 
                 param_upper.requires_grad=False
                 param.requires_grad=False
+        
+        
+        print("3. Trainable number of parameters in self.model: {}".format(
+                sum(p.numel() for p in self.model.parameters() if p.requires_grad),
+            ))
+        print("3. Trainable number of parameters in model_p: {}".format(
+                sum(p.numel() for p in model_p.parameters() if p.requires_grad),
+            ))
+
+        
+        model_p.zero_grad()
 
         
 
@@ -870,9 +888,14 @@ class OurBilevelMinimaxTrainer2(Trainer):
         # Set the random seed to ensure that we sample the same z for perturbation/update
         torch.manual_seed(random_seed if random_seed is not None else self.zo_random_seed)
 
-        for _, param in self.named_parameters_to_optim:
-            z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-            param.data = param.data + scaling_factor * z * self.args.zo_eps
+        if "bilevel_minimax" in self.args.trainer:
+            for _, param in self.named_parameters_for_zo_step:
+                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+                param.data = param.data + scaling_factor * z * self.args.zo_eps
+        else:
+            for _, param in self.named_parameters_to_optim:
+                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+                param.data = param.data + scaling_factor * z * self.args.zo_eps
 
     def zo_forward(self, model, inputs):
         """
