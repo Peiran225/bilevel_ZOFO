@@ -33,7 +33,7 @@ from packaging import version
 from sklearn.linear_model import LogisticRegressionCV
 from torch import nn
 from torch.func import functional_call, jvp
-from torch.optim import SGD, Adam
+from torch.optim import SGD, Adam, AdamW
 from torch.utils.data import DataLoader, RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.auto import tqdm
@@ -314,7 +314,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
 
         # overload the optimizer here
         if args.trainer == "zo_adam":
-            self.optimizer = Adam(self.model.parameters(), lr=args.learning_rate)
+            self.optimizer = AdamW(self.model.parameters(), lr=args.learning_rate)
             # self.optimizer = {name: Adam([param], lr=args.learning_rate) for name, param in self.model.named_parameters()}
             # assert args.lr_scheduler
             assert args.lr_scheduler_type == 'constant', "we did not implement lr_schedule."
@@ -326,7 +326,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
         else:
             assert args.lr_scheduler_type == 'constant', "we did not implement lr_schedule."
             if args.optimizer == "adam":
-                self.optimizer = Adam(self.model.parameters(), lr=args.learning_rate)
+                self.optimizer = AdamW(self.model.parameters(), lr=args.learning_rate)
             elif args.optimizer == "sgd":
                 self.optimizer = SGD(self.model.parameters(), lr=args.learning_rate, momentum=args.momentum)
         
@@ -334,7 +334,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
             print("load the upper level optimizer")
             # assert args.upper_lr_scheduler_type == 'constant', "we did not implement lr_schedule."
             if args.upper_optimizer == "adam":
-                self.upper_optimizer = Adam(self.model_p.parameters(), lr=args.upper_learning_rate)
+                self.upper_optimizer = AdamW(self.model_p.parameters(), lr=args.upper_learning_rate)
             elif args.upper_optimizer == "sgd":
                 self.upper_optimizer = SGD(self.model_p.parameters(), lr=args.upper_learning_rate, momentum=args.upper_momentum)
 
@@ -561,7 +561,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
                     except:
                         train_iterator_p = iter(train_dataloader)  
                         
-                    self.compute_grad_p(self.model_p, model, inputs_f, inputs_p)
+                    self.compute_grad_p(self.model_p, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval)
                     self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
                     self.bilevel_upper_step(self.model_p)
                     
@@ -670,10 +670,16 @@ class OurBilevelMinimaxTrainer2(Trainer):
     ###########upper level update#######################
     ######################################################
     def compute_upper_loss(self, model_p, model, inputs_f, inputs_p):
-        upper_loss = self.compute_loss(model_p,inputs_f) + self.args.Lambda*(self.compute_loss(model_p, inputs_p) - self.compute_loss(model, inputs_p))
+        a = self.compute_loss(model_p,inputs_f)
+        b = self.compute_loss(model_p, inputs_p)
+        c = self.compute_loss(model, inputs_p)                              
+        # upper_loss = self.compute_loss(model_p,inputs_f) + self.args.Lambda*(self.compute_loss(model_p, inputs_p) - self.compute_loss(model, inputs_p))
+        upper_loss = a + self.args.Lambda * (b - c)
+        print(f'first one {a} second one {b} third one {c}')
+
         return upper_loss
     
-    def compute_grad_p(self, model_p, model, inputs_f, inputs_p):
+    def compute_grad_p(self, model_p, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval):
         model.train()
         model_p.train()
         
@@ -687,6 +693,9 @@ class OurBilevelMinimaxTrainer2(Trainer):
 
         with self.compute_loss_context_manager():
             loss = self.compute_upper_loss(model_p, model, inputs_f, inputs_p)
+            print('evaluating the upper model_p')
+            self._maybe_log_save_evaluate(loss, model_p, trial, epoch, ignore_keys_for_eval)
+            print('finishing evaluating the upper model_p')
 
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
