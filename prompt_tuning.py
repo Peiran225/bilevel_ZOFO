@@ -32,7 +32,7 @@ class PromptEmbedding(nn.Module):
 
             word_embedding_weights = word_embeddings(init_token_ids).detach().clone()
             word_embedding_weights = word_embedding_weights.to(torch.float32)
-            self.embedding.weight = nn.Parameter(word_embedding_weights,requires_grad=True)
+            self.embedding.weight = nn.Parameter(word_embedding_weights, requires_grad=True)
 
     def forward(self, indices):
         # Just get embeddings
@@ -121,7 +121,6 @@ def _model_forward_hook(
 
     inputs_embeds = torch.cat((prompts, inputs_embeds), dim=1)
 
-
     outputs = self.prompt_tuning_original_forward(inputs_embeds=inputs_embeds, **kwargs)
 
     if hide_virtual_token_logits and hasattr(outputs, "logits"):
@@ -193,6 +192,7 @@ class PromptTuning:
             if "prompt_encoder" not in n:
                 p.requires_grad = False
 
+
 class PromptTuningModel:
 
     def __init__(
@@ -215,7 +215,7 @@ class PromptTuningModel:
         init_by_real_tokens: bool, optional, default=False
             Whether to initialize the virtual tokens by real tokens.
         """
-        
+
         model = model_base
         hidden_dim = model.config.hidden_size
 
@@ -259,7 +259,6 @@ class PromptTuningModel:
         for n, p in model.named_parameters():
             if "prompt_encoder" not in n:
                 p.requires_grad = False
-
 
 
 class PromptTuningModel_with_model:

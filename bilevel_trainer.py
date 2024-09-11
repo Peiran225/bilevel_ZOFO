@@ -44,9 +44,7 @@ from transformers.dependency_versions_check import dep_version_check
 # Integrations must be imported before ML frameworks:
 from transformers.integrations import (  # isort: split
     hp_params,
-    is_fairscale_available,
 )
-from transformers.pytorch_utils import is_torch_greater_or_equal_than_1_10, is_torch_less_than_1_11
 from transformers.trainer_callback import (
     DefaultFlowCallback,
     ProgressCallback,
@@ -57,7 +55,6 @@ from transformers.trainer_pt_utils import (
 )
 from transformers.trainer_utils import (
     HPSearchBackend,
-    ShardedDDPOption,
     TrainOutput,
     has_length,
     speed_metrics,
@@ -75,7 +72,8 @@ from transformers.utils import (
 import wandb
 from metrics import f1
 
-_is_native_cpu_amp_available = is_torch_greater_or_equal_than_1_10
+_is_native_cpu_amp_available = True
+is_torch_less_than_1_11 = False
 
 DEFAULT_CALLBACKS = [DefaultFlowCallback]
 DEFAULT_PROGRESS_CALLBACK = ProgressCallback
@@ -92,9 +90,6 @@ if is_torch_tpu_available(check_device=False):
     import torch_xla.core.xla_model as xm
     import torch_xla.debug.metrics as met
     import torch_xla.distributed.parallel_loader as pl
-
-if is_fairscale_available():
-    dep_version_check("fairscale")
 
 if is_sagemaker_mp_enabled():
     import smdistributed.modelparallel.torch as smp
@@ -115,8 +110,6 @@ TRAINER_STATE_NAME = "trainer_state.json"
 OPTIMIZER_NAME = "optimizer.pt"
 SCHEDULER_NAME = "scheduler.pt"
 SCALER_NAME = "scaler.pt"
-
-
 
 import argparse
 import os
@@ -146,16 +139,18 @@ from utils import *
 from lower_level_trainer import LowerLevelTrainer
 import evaluate
 
+
 class OurBilevelTrainer(Trainer):
 
     # ZO-Bench added: new parameters to our traininer
-    def __init__(self, evaluate_func, dev_dataset, dev_samples, eval_samples, lower_level_training_args, *args, **kwargs):
+    def __init__(self, evaluate_func, dev_dataset, dev_samples, eval_samples, lower_level_training_args, *args,
+                 **kwargs):
         super().__init__(*args, **kwargs)  # Initialize the base class
         self.evaluate_func = evaluate_func
-        self.dev_dataset=dev_dataset
+        self.dev_dataset = dev_dataset
         self.dev_samples = dev_samples
         self.eval_samples = eval_samples
-        self.lower_level_training_args=lower_level_training_args
+        self.lower_level_training_args = lower_level_training_args
         self.metric = evaluate.load("accuracy")
 
     def _inner_training_loop(
@@ -500,12 +495,12 @@ class OurBilevelTrainer(Trainer):
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                 # MeZO added: estimate gradient
-                if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt","bilevel"]:
+                if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt", "bilevel"]:
                     if args.q == 1:
                         if args.trainer == "bilevel":
                             print('perform 1 bilevel step')
                             tr_loss_step = self.zo_hyper_step(model, inputs)
-                        else: 
+                        else:
                             tr_loss_step = self.zo_step(model, inputs)
                     elif args.q > 1:
                         tr_loss_step = self.zo_step_v1(model, inputs)
@@ -576,8 +571,8 @@ class OurBilevelTrainer(Trainer):
                     # val_metrics = self.evaluate_func([], self.dev_samples)
                     test_metrics = self.evaluate_func([], self.eval_samples)
                     if "accuracy" in test_metrics:
-                        self.log({"test_acc": test_metrics["accuracy"]})#, "val_acc": val_metrics["accuracy"]})
-                        wandb.log({"test_acc": test_metrics["accuracy"]})#, "val_acc": val_metrics["accuracy"]})
+                        self.log({"test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
+                        wandb.log({"test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
                     else:
                         keys = list(test_metrics.keys())
                         log_dict = {}
@@ -820,7 +815,6 @@ class OurBilevelTrainer(Trainer):
             self.lower_level_train(model)
             loss2 = self.zo_forward(model, inputs)
             self.projected_grad = ((loss1 - loss2) / self.args.zo_eps).item()
-            
 
             # Reset model back to its parameters at start of step
             # self.zo_perturb_parameters(scaling_factor=1)
@@ -861,7 +855,7 @@ class OurBilevelTrainer(Trainer):
                 param.requires_grad = True
                 print(f"{name}: {param.requires_grad}")
             elif param.requires_grad:
-                param.requires_grad = False  
+                param.requires_grad = False
         if self.args.non_diff:
             collator = NondiffCollator
         else:
@@ -871,27 +865,26 @@ class OurBilevelTrainer(Trainer):
         )
 
         lower_level_trainer = LowerLevelTrainer(model=model,
-                             args=self.lower_level_training_args,
-                             train_dataset=self.train_dataset,
-                             eval_dataset=self.eval_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                            # compute_metrics=self.compute_metrics
-                            )
-        
+                                                args=self.lower_level_training_args,
+                                                train_dataset=self.train_dataset,
+                                                eval_dataset=self.eval_dataset,
+                                                tokenizer=self.tokenizer,
+                                                data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                                pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                                    self.tokenizer, pad_to_multiple_of=8),
+                                                # compute_metrics=self.compute_metrics
+                                                )
+
         lower_level_trainer.train()
 
-    
     def compute_metrics(self, eval_pred):
         predictions, labels = eval_pred
         predictions_tensor = torch.tensor(predictions)
-        predictions_tensor = F.softmax(predictions_tensor,dim=1)
+        predictions_tensor = F.softmax(predictions_tensor, dim=1)
         predictions_numpy = predictions_tensor.numpy()
         prediction_scores = np.array(predictions_numpy, dtype='float32')
 
-        return self.metric.compute(prediction_scores=prediction_scores[:,1], references=labels)
+        return self.metric.compute(prediction_scores=prediction_scores[:, 1], references=labels)
 
     @torch.no_grad()
     def zo_step(self, model, inputs):

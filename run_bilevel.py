@@ -1,5 +1,3 @@
-import argparse
-import copy
 import os
 import random
 import copy
@@ -18,38 +16,38 @@ from transformers import (
 )
 
 from metrics import calculate_metric
-from modeling_mistral import (
-    MistralForCausalLM,
-    MistralConfig
-)
+# from modeling_mistral import (
+#     MistralForCausalLM,
+#     MistralConfig
+# )
 from tasks import get_task
 from trainer import OurTrainer
-from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
+# from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
 from bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
 from utils import *
 
-# os.environ["TRANSFORMERS_CACHE"] = "./cache"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-AutoConfig.register("mistral", MistralConfig)
-AutoModelForCausalLM.register(MistralConfig, MistralForCausalLM)
+# AutoConfig.register("mistral", MistralConfig)
+# AutoModelForCausalLM.register(MistralConfig, MistralForCausalLM)
 
-
-# os.environ["HF_DATASETS_CACHE"] = "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/data"
 
 @dataclass
 class OurArguments(TrainingArguments):
+    output_dir: str = "./output"
     # dataset and sampling strategy
-    task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
-    lr_scheduler_type: str = 'constant'    
+    task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name.
+    # We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
+    lr_scheduler_type: str = 'constant'
     # Number of examples
     num_train: int = 0  # ICL mode: number of demonstrations; training mode: number of training samples
     num_dev: int = None  # (only enabled with training) number of development samples
     num_eval: int = None  # number of evaluation samples
-    num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None, then we will sample one set for each evaluation sample
+    num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None,
+    # then we will sample one set for each evaluation sample
     train_set_seed: int = 0  # designated seed to sample training samples/demos
     result_file: str = None  # file name for saving performance; if None, then use the task name, model name, and config
 
@@ -69,20 +67,24 @@ class OurArguments(TrainingArguments):
 
     # Training
     trainer: str = "none"
-    ## options
-    ## - none: no training -- for zero-shot or in-context learning (ICL)
-    ## - regular: regular huggingface trainer -- for fine-tuning
-    ## - zo_sgd: zeroth-order SGD (MeZO) training
-    ## - zo_conserv: zeroth-order SGD conservative training
-    ## - zo_adam: zeroth-order Adam training
-    ## - zo_sign_opt: zeroth-order sign sgd training
-    ## - forward_grad: forward gradient
-    ## - bilevel_minimax2
+    """
+    # options
+    # - none: no training -- for zero-shot or in-context learning (ICL)
+    # - regular: regular huggingface trainer -- for fine-tuning
+    # - zo_sgd: zeroth-order SGD (MeZO) training
+    # - zo_conserv: zeroth-order SGD conservative training
+    # - zo_adam: zeroth-order Adam training
+    # - zo_sign_opt: zeroth-order sign sgd training
+    # - forward_grad: forward gradient
+    # - bilevel_minimax2
+    """
     optimizer: str = "adamw"
-    ## options
-    ## - sgd
-    ## - adam
-    ## - adamw # this is huggingface default
+    """
+    # options
+    # - sgd
+    # - adam
+    # - adamw
+    """
     only_train_option: bool = True  # whether to only train the option part of the input
     train_as_classification: bool = False  # take the log likelihood of all options and train as classification
     momentum: float = 0.0  # only work for SGD optimizer
@@ -95,7 +97,7 @@ class OurArguments(TrainingArguments):
     # Prefix tuning
     prefix_tuning: bool = False  # whether to use prefix tuning
     num_prefix: int = 5  # number of prefixes to use
-    no_reparam: bool = True  # do not use reparameterization trick
+    no_reparam: bool = True  # do not use re-parameterization trick
     prefix_init_by_real_act: bool = True  # initialize prefix by real activations of random words
 
     # prompt tuning hyperparameters
@@ -165,22 +167,20 @@ class OurArguments(TrainingArguments):
     # evaluation every eval_step
     # eval_steps: int = 10
 
-    #training arguments for the bilevel problem
+    # training arguments for the bilevel problem
     Lambda: float = 0
     lower_level_num_train_steps: int = 1
-    lower_level_learning_rate:  float = 1e-3
+    lower_level_learning_rate: float = 1e-3
     lower_level_per_device_train_batch_size: int = 1
     lower_level_per_device_eval_batch_size: int = 1
     lower_level_num_train_epochs: int = 1
-    upper_optimizer: str = "sgd" # sgd/adam
+    upper_optimizer: str = "sgd"  # sgd/adam
     upper_learning_rate: float = 1e-9
     upper_momentum: float = 0.0
 
-    
-
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    # parser = argparse.ArgumentParser()
     parser = HfArgumentParser(OurArguments)
     args = parser.parse_args_into_dataclasses()[0]
     return args
@@ -196,7 +196,7 @@ def set_seed(seed: int):
 class Framework:
 
     def __init__(self, args, task):
-        
+
         self.args = args
         self.task = task
         if "bilevel_minimax" in self.args.trainer:
@@ -287,18 +287,23 @@ class Framework:
 
         # Prefix tuning/LoRA
         if self.args.prefix_tuning:
+            if "bilevel_minimax" in self.args.trainer:
+                raise NotImplementedError("Prefix tuning is not supported for bilevel minimax")
             from prefix_tuning import PrefixTuning
             PrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
                          float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
         if self.args.lora:
             from lora import LoRA
+            model_s = copy.deepcopy(model)
+            if "bilevel_minimax" in self.args.trainer:
+                LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16)
+
             LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16)
 
         if self.args.prompt_tuning:
 
             print("Adding Prompt Tuning to model...")
             if "bilevel_minimax" in self.args.trainer:
-
 
                 from prompt_tuning import PromptTuningModel_with_model
                 original_model = copy.deepcopy(model)
@@ -570,88 +575,85 @@ class Framework:
                 self.model_p.original_forward = self.model_p.forward
                 self.model_p.forward = forward_wrap_with_option_len.__get__(self.model_p, type(self.model_p))
 
-
-
         if self.args.non_diff:
             collator = NondiffCollator
         else:
             collator = DataCollatorForTokenClassification
 
         print(self.args)
-        if self.args.trainer=="bilevel_minimax":
+        if self.args.trainer == "bilevel_minimax":
             self.lower_level_training_args = TrainingArguments(
-                            output_dir="lower_level_output/model",
-                            learning_rate=self.args.lower_level_learning_rate,  # 1e-3
-                            per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
-                            per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
-                            num_train_epochs=self.args.lower_level_num_train_epochs,
-                            max_steps=self.args.lower_level_num_train_steps,
-                            evaluation_strategy="no",
-                            save_strategy="no",
-                            load_best_model_at_end=True,
-                            lr_scheduler_type="constant",
-                            seed=self.args.train_set_seed
-                        )
+                output_dir="lower_level_output/model",
+                learning_rate=self.args.lower_level_learning_rate,  # 1e-3
+                per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
+                per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
+                num_train_epochs=self.args.lower_level_num_train_epochs,
+                max_steps=self.args.lower_level_num_train_steps,
+                evaluation_strategy="no",
+                save_strategy="no",
+                load_best_model_at_end=True,
+                lr_scheduler_type="constant",
+                seed=self.args.train_set_seed
+            )
             trainer = OurBilevelMinimaxTrainer(model=self.model,
-                             model_s = self.model_s,
-                             args=self.args,
-                             lower_level_training_args=self.lower_level_training_args,
-                             lower_train_dataset=dev_dataset,
-                             train_dataset=train_dataset,
-                             eval_dataset=eval_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                             eval_samples=eval_samples,
-                             dev_samples=dev_samples,
-                             evaluate_func=self.evaluate,
-                             ) #the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
-        elif self.args.trainer=="bilevel_minimax2":
+                                               model_s=self.model_s,
+                                               args=self.args,
+                                               lower_level_training_args=self.lower_level_training_args,
+                                               lower_train_dataset=dev_dataset,
+                                               train_dataset=train_dataset,
+                                               eval_dataset=eval_dataset,
+                                               tokenizer=self.tokenizer,
+                                               data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                               pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                                   self.tokenizer, pad_to_multiple_of=8),
+                                               eval_samples=eval_samples,
+                                               dev_samples=dev_samples,
+                                               evaluate_func=self.evaluate,
+                                               )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
+        elif self.args.trainer == "bilevel_minimax2":
             trainer = OurBilevelMinimaxTrainer2(model=self.model,
-                             model_p = self.model_p,
-                             args=self.args,
-                             train_dataset=train_dataset,
-                             eval_dataset=eval_dataset,
-                             dev_dataset=dev_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                             eval_samples=eval_samples,
-                             evaluate_func=self.evaluate,
-                             )         
-        elif self.args.trainer=="bilevel_minimax_hyper_p":
+                                                model_p=self.model_p,
+                                                args=self.args,
+                                                train_dataset=train_dataset,
+                                                eval_dataset=eval_dataset,
+                                                dev_dataset=dev_dataset,
+                                                tokenizer=self.tokenizer,
+                                                data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                                pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                                    self.tokenizer, pad_to_multiple_of=8),
+                                                eval_samples=eval_samples,
+                                                evaluate_func=self.evaluate,
+                                                )
+        elif self.args.trainer == "bilevel_minimax_hyper_p":
             trainer = OurBilevelMinimaxTrainer(model=self.model,
-                             model_s = self.model_s,
-                             args=self.args,
-                             lower_level_training_args=self.lower_level_training_args,
-                             lower_train_dataset=dev_dataset,
-                             train_dataset=train_dataset,
-                             eval_dataset=eval_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                             eval_samples=eval_samples,
-                             dev_samples=dev_samples,
-                             evaluate_func=self.evaluate,
-                             ) 
+                                               model_s=self.model_s,
+                                               args=self.args,
+                                               lower_level_training_args=self.lower_level_training_args,
+                                               lower_train_dataset=dev_dataset,
+                                               train_dataset=train_dataset,
+                                               eval_dataset=eval_dataset,
+                                               tokenizer=self.tokenizer,
+                                               data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                               pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                                   self.tokenizer, pad_to_multiple_of=8),
+                                               eval_samples=eval_samples,
+                                               dev_samples=dev_samples,
+                                               evaluate_func=self.evaluate,
+                                               )
         else:
             trainer = OurTrainer(model=self.model,
-                             args=self.args,
-                             train_dataset=train_dataset,
-                             eval_dataset=eval_dataset,
-                             tokenizer=self.tokenizer,
-                             data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                             pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                 self.tokenizer, pad_to_multiple_of=8),
-                             eval_samples=eval_samples,
-                             dev_samples=dev_samples,
-                             evaluate_func=self.evaluate,
-                             )
+                                 args=self.args,
+                                 train_dataset=train_dataset,
+                                 eval_dataset=eval_dataset,
+                                 tokenizer=self.tokenizer,
+                                 data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+                                                                                 pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+                                     self.tokenizer, pad_to_multiple_of=8),
+                                 eval_samples=eval_samples,
+                                 dev_samples=dev_samples,
+                                 evaluate_func=self.evaluate,
+                                 )
 
-        
         if self.args.save_on_interrupt:
             trainer.add_callback(SIGUSR1Callback())
 
@@ -713,8 +715,6 @@ def result_file_tag(args):
 def main():
     args = parse_args()
 
-    
-
     if args.prefix_tuning:
         args.mode = "prefix"
     elif args.lora:
@@ -724,11 +724,18 @@ def main():
     else:
         args.mode = "ft"
     if "bilevel_minimax" in args.trainer:
-        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}-LowerSTEPS{args.lower_level_num_train_steps}-UpperLr{args.upper_learning_rate}-Lambda{args.Lambda}"
+        args.tag = (f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}"
+                    f"-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
+                    f"-LR{args.learning_rate}-{args.lr_scheduler_type}"
+                    f"-ZOEPS{args.zo_eps}-Q{args.q}"
+                    f"-LowerSTEPS{args.lower_level_num_train_steps}"
+                    f"-UpperLr{args.upper_learning_rate}"
+                    f"-Lambda{args.Lambda}")
     else:
-        args.tag = f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}"
-    
-        
+        args.tag = (f"{args.trainer}-{args.task_name}-{args.template_ver}-{args.model_name.split('/')[-1]}"
+                    f"-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
+                    f"-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}")
+
     args.tag = "momen" + args.tag if args.momentum > 0 else args.tag
     args.run_name = args.tag
     args.output_dir = f"result/{args.tag}"
@@ -737,12 +744,13 @@ def main():
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
 
-    wandb.init(project='zo-bench', entity="pyu123", name=args.tag, config=args)
+    wandb.init(project='zo-bench', entity="rezashkv", name=args.tag, config=args)
 
     set_seed(args.seed)
     task = get_task(args.task_name)
 
-    # This function samples both training and validation samples. The validation (dev) samples are also stored in "train_sets"
+    # This function samples both training and validation samples.
+    # The validation (dev) samples are also stored in "train_sets"
     # Later the train_samples and dev_samples are separated
     train_sets = task.sample_train_sets(num_train=args.num_train, num_dev=args.num_dev, num_eval=args.num_eval,
                                         num_train_sets=args.num_train_sets, seed=args.train_set_seed)

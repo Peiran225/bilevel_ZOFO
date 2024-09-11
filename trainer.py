@@ -44,9 +44,7 @@ from transformers.dependency_versions_check import dep_version_check
 # Integrations must be imported before ML frameworks:
 from transformers.integrations import (  # isort: split
     hp_params,
-    is_fairscale_available,
 )
-from transformers.pytorch_utils import is_torch_greater_or_equal_than_1_10, is_torch_less_than_1_11
 from transformers.trainer_callback import (
     DefaultFlowCallback,
     ProgressCallback,
@@ -57,7 +55,6 @@ from transformers.trainer_pt_utils import (
 )
 from transformers.trainer_utils import (
     HPSearchBackend,
-    ShardedDDPOption,
     TrainOutput,
     has_length,
     speed_metrics,
@@ -75,7 +72,8 @@ from transformers.utils import (
 import wandb
 from metrics import f1
 
-_is_native_cpu_amp_available = is_torch_greater_or_equal_than_1_10
+_is_native_cpu_amp_available = True
+is_torch_less_than_1_11 = False
 
 DEFAULT_CALLBACKS = [DefaultFlowCallback]
 DEFAULT_PROGRESS_CALLBACK = ProgressCallback
@@ -92,9 +90,6 @@ if is_torch_tpu_available(check_device=False):
     import torch_xla.core.xla_model as xm
     import torch_xla.debug.metrics as met
     import torch_xla.distributed.parallel_loader as pl
-
-if is_fairscale_available():
-    dep_version_check("fairscale")
 
 if is_sagemaker_mp_enabled():
     import smdistributed.modelparallel.torch as smp
