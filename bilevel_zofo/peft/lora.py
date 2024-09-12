@@ -253,6 +253,7 @@ class LoRA:
         else:
             raise NotImplementedError
 
+
         # Insert LoRA
         for key, _ in model.named_modules():
             if key[-len(attention_name):] == attention_name:

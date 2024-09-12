@@ -23,7 +23,6 @@ import shutil
 import sys
 import time
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -35,13 +34,11 @@ from sklearn.linear_model import LogisticRegressionCV
 from torch import nn
 from torch.func import functional_call, jvp
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.data import DataLoader, RandomSampler
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader, RandomSampler, SubsetRandomSampler
 from tqdm.auto import tqdm
 from transformers import Trainer, is_torch_xla_available
 from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
-from transformers.deepspeed import deepspeed_init, is_deepspeed_zero3_enabled
-from transformers.dependency_versions_check import dep_version_check
+from transformers.deepspeed import deepspeed_init
 # Integrations must be imported before ML frameworks:
 from transformers.integrations import (  # isort: split
     hp_params, deepspeed_load_checkpoint,
@@ -65,7 +62,6 @@ from transformers.trainer_utils import (
 )
 from transformers.training_args import OptimizerNames, ParallelMode
 from transformers.utils import (
-    WEIGHTS_NAME,
     is_apex_available,
     is_in_notebook,
     is_sagemaker_mp_enabled,
@@ -74,12 +70,11 @@ from transformers.utils import (
     logging, is_accelerate_available,
 )
 
-if is_datasets_available():
-    import datasets
+from datasets import Dataset as HFDataset
 
-# from torch.optim.optimizer import StateDict, params_t
 import wandb
 from metrics import f1
+from lora import MultiTaskLoRALinear
 
 _is_native_cpu_amp_available = True
 is_torch_less_than_1_11 = False
@@ -125,7 +120,8 @@ SCALER_NAME = "scaler.pt"
 class OurBilevelMinimaxTrainer2(Trainer):
 
     # ZO-Bench added: new parameters to our trainer
-    def __init__(self, model_p, evaluate_func, dev_dataset, tasks_eval_samples, tasks, *args, **kwargs):
+    def __init__(self, model_p, evaluate_func, dev_dataset, tasks_eval_samples, tasks, *args, num_tasks_per_iteration=5,
+                 **kwargs):
         super().__init__(*args, **kwargs)  # Initialize the base class
         self.evaluate_func = evaluate_func
         self.dev_dataset = dev_dataset
@@ -133,6 +129,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
         self.model_p = model_p
         self.do_grad_scaling = False
         self.tasks = tasks
+        self.num_tasks_per_iteration = min(num_tasks_per_iteration, len(tasks))
+        self.sampled_tasks = np.random.choice(len(tasks), self.num_tasks_per_iteration, replace=False).sort()
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -547,151 +545,156 @@ class OurBilevelMinimaxTrainer2(Trainer):
             step = -1
             dev_iterator = iter(dev_dataloader)
             train_iterator_p = iter(train_dataloader)
-            for step, inputs in enumerate(epoch_iterator):
+            # for step, inputs in enumerate(epoch_iterator):
+            for step, batch in enumerate(epoch_iterator):
                 total_batched_samples += 1
                 total_steps += 1
+                for task_ind, inputs in enumerate(batch):
+                    if self.args.lora:
+                        active_task = str(self.tasks[self.sampled_tasks[task_ind]])
+                        self.set_active_lora(active_task)
 
-                if self.args.include_num_input_tokens_seen:
-                    main_input_name = getattr(self.model, "main_input_name", "input_ids")
-                    if main_input_name not in inputs:
-                        logger.warning(
-                            "Tried to track the number of tokens seen, however the current model is "
-                            "not configured properly to know what item is the input. To fix this, add "
-                            "a `main_input_name` attribute to the model class you are using."
-                        )
-                    else:
-                        self.state.num_input_tokens_seen += (
-                            torch.sum(
-                                self.accelerator.gather(
-                                    torch.tensor(
-                                        inputs[main_input_name].numel(), device=self.args.device, dtype=torch.int64
+                    if self.args.include_num_input_tokens_seen:
+                        main_input_name = getattr(self.model, "main_input_name", "input_ids")
+                        if main_input_name not in inputs:
+                            logger.warning(
+                                "Tried to track the number of tokens seen, however the current model is "
+                                "not configured properly to know what item is the input. To fix this, add "
+                                "a `main_input_name` attribute to the model class you are using."
+                            )
+                        else:
+                            self.state.num_input_tokens_seen += (
+                                torch.sum(
+                                    self.accelerator.gather(
+                                        torch.tensor(
+                                            inputs[main_input_name].numel(), device=self.args.device, dtype=torch.int64
+                                        )
                                     )
                                 )
+                                .cpu()
+                                .item()
                             )
-                            .cpu()
-                            .item()
-                        )
-                if rng_to_sync:
-                    self._load_rng_state(resume_from_checkpoint)
-                    rng_to_sync = False
-
-                # torch.cuda.synchronize()
-                step_start_time = time.time()
-
-                # Skip past any already trained steps if resuming training
-                if steps_trained_in_current_epoch > 0:
-                    steps_trained_in_current_epoch -= 1
-                    if steps_trained_progress_bar is not None:
-                        steps_trained_progress_bar.update(1)
-                    if steps_trained_in_current_epoch == 0:
+                    if rng_to_sync:
                         self._load_rng_state(resume_from_checkpoint)
-                    continue
-                elif steps_trained_progress_bar is not None:
-                    steps_trained_progress_bar.close()
-                    steps_trained_progress_bar = None
+                        rng_to_sync = False
 
-                if step % args.gradient_accumulation_steps == 0:
-                    self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
+                    # torch.cuda.synchronize()
+                    step_start_time = time.time()
 
-                # MeZO added: estimate gradient
-                if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt"]:
-                    if args.q == 1:
-                        tr_loss_step = self.zo_step(model, inputs)
-                    elif args.q > 1:
-                        tr_loss_step = self.zo_step_v1(model, inputs)
-                    else:
-                        raise ValueError(f"q={args.q} is not supported.")
-                elif args.trainer == "zo_conserv":
-                    tr_loss_step = self.zo_conserv_step(model, inputs)
-                elif args.trainer == "forward_grad":
-                    tr_loss_step = self.forward_grad_step(model, inputs)
-                else:
-                    with self.accelerator.accumulate(model):
-                        tr_loss_step = self.training_step(model, inputs)
+                    # Skip past any already trained steps if resuming training
+                    if steps_trained_in_current_epoch > 0:
+                        steps_trained_in_current_epoch -= 1
+                        if steps_trained_progress_bar is not None:
+                            steps_trained_progress_bar.update(1)
+                        if steps_trained_in_current_epoch == 0:
+                            self._load_rng_state(resume_from_checkpoint)
+                        continue
+                    elif steps_trained_progress_bar is not None:
+                        steps_trained_progress_bar.close()
+                        steps_trained_progress_bar = None
 
-                if (
-                        args.logging_nan_inf_filter
-                        and not is_torch_xla_available()
-                        and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                ):
-                    # if loss is nan or inf simply add the average of previous logged losses
-                    tr_loss += tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
-                else:
-                    if tr_loss.device != tr_loss_step.device:
-                        raise ValueError(
-                            f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
-                        )
-                    tr_loss += tr_loss_step
+                    if step % args.gradient_accumulation_steps == 0:
+                        self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                self.current_flos += float(self.floating_point_ops(inputs))
-
-                is_last_step_and_steps_less_than_grad_acc = (
-                    steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
-                )
-
-                if (
-                        total_batched_samples % args.gradient_accumulation_steps == 0
-                        or
-                        # last step in epoch but step is always smaller than gradient_accumulation_steps
-                        is_last_step_and_steps_less_than_grad_acc
-                ):
-                    # MeZO added: update model with the estimated gradient
-                    if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt", "zo_conserv"]:
-                        self.zo_update(model)
+                    # MeZO added: estimate gradient
+                    if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt"]:
+                        if args.q == 1:
+                            tr_loss_step = self.zo_step(model, inputs)
+                        elif args.q > 1:
+                            tr_loss_step = self.zo_step_v1(model, inputs)
+                        else:
+                            raise ValueError(f"q={args.q} is not supported.")
+                    elif args.trainer == "zo_conserv":
+                        tr_loss_step = self.zo_conserv_step(model, inputs)
                     elif args.trainer == "forward_grad":
-                        self.forward_grad_update(model)
+                        tr_loss_step = self.forward_grad_step(model, inputs)
                     else:
-                        if is_last_step_and_steps_less_than_grad_acc:
-                            self.accelerator.gradient_state._set_sync_gradients(True)
+                        with self.accelerator.accumulate(model):
+                            tr_loss_step = self.training_step(model, inputs)
 
-                        # Gradient clipping
-                        if args.max_grad_norm is not None and args.max_grad_norm > 0:
-                            # deepspeed does its own clipping
+                    if (
+                            args.logging_nan_inf_filter
+                            and not is_torch_xla_available()
+                            and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
+                    ):
+                        # if loss is nan or inf simply add the average of previous logged losses
+                        tr_loss += tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
+                    else:
+                        if tr_loss.device != tr_loss_step.device:
+                            raise ValueError(
+                                f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
+                            )
+                        tr_loss += tr_loss_step
 
-                            if is_sagemaker_mp_enabled() and args.fp16:
-                                _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
-                            elif self.use_apex:
-                                # Revert to normal clipping otherwise, handling Apex or full precision
-                                _grad_norm = nn.utils.clip_grad_norm_(
-                                    amp.master_params(self.optimizer),
-                                    args.max_grad_norm,
-                                )
-                            else:
-                                _grad_norm = self.accelerator.clip_grad_norm_(
-                                    model.parameters(),
-                                    args.max_grad_norm,
-                                )
+                    self.current_flos += float(self.floating_point_ops(inputs))
 
-                            if (
-                                    is_accelerate_available()
-                                    and self.accelerator.distributed_type == DistributedType.DEEPSPEED
-                            ):
-                                grad_norm = model.get_global_grad_norm()
-                                # In some cases the grad norm may not return a float
-                                if hasattr(grad_norm, "item"):
-                                    grad_norm = grad_norm.item()
-                            else:
-                                grad_norm = _grad_norm
+                    is_last_step_and_steps_less_than_grad_acc = (
+                            steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
+                    )
 
-                        self.optimizer.step()
+                    if (
+                            total_batched_samples % args.gradient_accumulation_steps == 0
+                            or
+                            # last step in epoch but step is always smaller than gradient_accumulation_steps
+                            is_last_step_and_steps_less_than_grad_acc
+                    ):
+                        # MeZO added: update model with the estimated gradient
+                        if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt", "zo_conserv"]:
+                            self.zo_update(model)
+                        elif args.trainer == "forward_grad":
+                            self.forward_grad_update(model)
+                        else:
+                            if is_last_step_and_steps_less_than_grad_acc:
+                                self.accelerator.gradient_state._set_sync_gradients(True)
 
-                        self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
+                            # Gradient clipping
+                            if args.max_grad_norm is not None and args.max_grad_norm > 0:
+                                # deepspeed does its own clipping
 
-                        optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
-                        if optimizer_was_run:
-                            # Delay optimizer scheduling until metrics are generated
-                            if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                                self.lr_scheduler.step()
+                                if is_sagemaker_mp_enabled() and args.fp16:
+                                    _grad_norm = self.optimizer.clip_master_grads(args.max_grad_norm)
+                                elif self.use_apex:
+                                    # Revert to normal clipping otherwise, handling Apex or full precision
+                                    _grad_norm = nn.utils.clip_grad_norm_(
+                                        amp.master_params(self.optimizer),
+                                        args.max_grad_norm,
+                                    )
+                                else:
+                                    _grad_norm = self.accelerator.clip_grad_norm_(
+                                        model.parameters(),
+                                        args.max_grad_norm,
+                                    )
 
-                        model.zero_grad()
+                                if (
+                                        is_accelerate_available()
+                                        and self.accelerator.distributed_type == DistributedType.DEEPSPEED
+                                ):
+                                    grad_norm = model.get_global_grad_norm()
+                                    # In some cases the grad norm may not return a float
+                                    if hasattr(grad_norm, "item"):
+                                        grad_norm = grad_norm.item()
+                                else:
+                                    grad_norm = _grad_norm
 
-                    self.state.global_step += 1
-                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
-                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                    self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+                            self.optimizer.step()
 
-                else:
-                    self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+                            self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
+
+                            optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
+                            if optimizer_was_run:
+                                # Delay optimizer scheduling until metrics are generated
+                                if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                                    self.lr_scheduler.step()
+
+                            model.zero_grad()
+
+                        self.state.global_step += 1
+                        self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                        self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                        self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+
+                    else:
+                        self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
                 # check whether to do upper level update:
                 if (total_steps + 1) % self.args.lower_level_num_train_steps == 0:
@@ -710,6 +713,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                     self.compute_grad_p(self.model_p, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval)
                     self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
                     self.bilevel_upper_step(self.model_p)
+                    self.sampled_tasks = np.random.choice(range(len(self.tasks)), self.num_tasks_per_iteration,
+                                                          replace=False)
 
                 # torch.cuda.synchronize()
                 train_step_duration = time.time() - step_start_time
@@ -1570,38 +1575,134 @@ class OurBilevelMinimaxTrainer2(Trainer):
 
         dev_dataset = self.dev_dataset
         data_collator = self.data_collator
-        if is_datasets_available() and isinstance(dev_dataset, datasets.Dataset):
-            dev_dataset = self._remove_unused_columns(dev_dataset, description="training")
+        if is_datasets_available() and isinstance(dev_dataset, HFDataset):
+            dev_dataset = self._remove_unused_columns(dev_dataset, description="upper level training")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="upper level training")
+
+        # Define DataLoader params (common to all individual dataset loaders)
+        dataloader_params = {
+            "batch_size": self._train_batch_size,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(dev_dataset, torch.utils.data.IterableDataset):
+            # dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # For ConcatDataset, create separate loaders for each dataset
+        if isinstance(dev_dataset, torch.utils.data.ConcatDataset):
+            datasets = dev_dataset.datasets  # Access the individual datasets from the ConcatDataset
+            loaders = []
+
+            for dataset in datasets:
+                dataset_sampler = SubsetRandomSampler(range(len(dataset)))  # Random sampler for each dataset
+                loader = DataLoader(
+                    dataset,
+                    sampler=dataset_sampler,
+                    collate_fn=data_collator,
+                    **dataloader_params
+                )
+                loaders.append(loader)
+
+            # Custom function to interleave batches (as a list of mini-batches, one from each dataset)
+            def interleave_batches(loaders):
+                iter_loaders = [iter(loader) for loader in loaders]
+                while True:
+                    batch = []
+                    for loader_iter in iter_loaders:
+                        try:
+                            batch.append(next(loader_iter))  # Append mini-batch (dict) from each dataset
+                        except StopIteration:
+                            return  # Stop when one loader is exhausted
+                    yield batch  # Yield a list of mini-batches (one for each dataset)
+
+            # Return a DataLoader that yields lists of mini-batches
+            return self.accelerator.prepare(interleave_batches(loaders))
+
+        # Default dataloader for non-ConcatDataset (fallback)
+        else:
+            dataloader_params["collate_fn"] = data_collator
+            dataloader_params["sampler"] = self._get_eval_sampler() if not isinstance(dev_dataset,
+                                                                                       torch.utils.data.IterableDataset) else None
+            return self.accelerator.prepare(DataLoader(dev_dataset, **dataloader_params))
+
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Returns the training [`~torch.utils.data.DataLoader`] that yields batches as lists of mini-batches,
+        where each mini-batch is taken from one of the datasets in the ConcatDataset.
+
+        Each batch will be a list of dictionaries, with one dictionary per dataset.
+        """
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        train_dataset = self.train_dataset
+        data_collator = self.data_collator
+
+        # Handle dataset-specific column removal (if applicable)
+        if is_datasets_available() and isinstance(train_dataset, HFDataset):
+            train_dataset = self._remove_unused_columns(train_dataset, description="training")
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
 
-        if isinstance(dev_dataset, torch.utils.data.IterableDataset):
-            if self.args.world_size > 1:
-                dev_dataset = IterableDatasetShard(
-                    dev_dataset,
-                    batch_size=self._train_batch_size,
-                    drop_last=self.args.dataloader_drop_last,
-                    num_processes=self.args.world_size,
-                    process_index=self.args.process_index,
+        # Define DataLoader params (common to all individual dataset loaders)
+        dataloader_params = {
+            "batch_size": self._train_batch_size,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(train_dataset, torch.utils.data.IterableDataset):
+            # dataloader_params["sampler"] = self._get_train_sampler()
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["worker_init_fn"] = seed_worker
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # For ConcatDataset, create separate loaders for each dataset
+        if isinstance(train_dataset, torch.utils.data.ConcatDataset):
+            datasets = train_dataset.datasets  # Access the individual datasets from the ConcatDataset
+            loaders = []
+
+            for dataset in datasets:
+                dataset_sampler = SubsetRandomSampler(range(len(dataset)))  # Random sampler for each dataset
+                loader = DataLoader(
+                    dataset,
+                    sampler=dataset_sampler,
+                    collate_fn=data_collator,
+                    **dataloader_params
                 )
+                loaders.append(loader)
 
-            return DataLoader(
-                dev_dataset,
-                batch_size=self._train_batch_size,
-                collate_fn=data_collator,
-                num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.dataloader_pin_memory,
-            )
+            # Custom function to interleave batches (as a list of mini-batches, one from each dataset)
+            def interleave_batches(loaders):
+                iter_loaders = [iter(loader) for i, loader in enumerate(loaders) if i in self.sampled_tasks]
+                while True:
+                    batch = []
+                    for loader_iter in iter_loaders:
+                        try:
+                            batch.append(next(loader_iter))  # Append mini-batch (dict) from each dataset
+                        except StopIteration:
+                            return  # Stop when one loader is exhausted
+                    yield batch  # Yield a list of mini-batches (one for each dataset)
 
-        dev_sampler = self._get_eval_sampler(dev_dataset)
+            # Return a DataLoader that yields lists of mini-batches
+            return self.accelerator.prepare(interleave_batches(loaders))
 
-        return DataLoader(
-            dev_dataset,
-            batch_size=self._train_batch_size,
-            sampler=dev_sampler,
-            collate_fn=data_collator,
-            drop_last=self.args.dataloader_drop_last,
-            num_workers=self.args.dataloader_num_workers,
-            pin_memory=self.args.dataloader_pin_memory,
-            worker_init_fn=seed_worker,
-        )
+        # Default dataloader for non-ConcatDataset (fallback)
+        else:
+            dataloader_params["collate_fn"] = data_collator
+            dataloader_params["sampler"] = self._get_train_sampler() if not isinstance(train_dataset,
+                                                                                       torch.utils.data.IterableDataset) else None
+            return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
+
+    def set_active_lora(self, task):
+        # iterate through the model to set the active lora if the module is an instance of MultiTaskLoRALinear
+        for key, module in self.model.named_modules():
+            if isinstance(module, MultiTaskLoRALinear):
+                module.set_active_lora(task)
