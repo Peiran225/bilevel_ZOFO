@@ -15,16 +15,16 @@ from transformers import (
     DataCollatorForTokenClassification
 )
 
-from metrics import calculate_metric
+from bilevel_zofo.metrics import calculate_metric
 # from modeling_mistral import (
 #     MistralForCausalLM,
 #     MistralConfig
 # )
-from tasks import get_tasks
+from bilevel_zofo.data.tasks import get_tasks
 # from trainer import OurTrainer
 # from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
-from bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
-from utils import *
+from bilevel_zofo.trainers.bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
+from bilevel_zofo.utils import *
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ class OurArguments(TrainingArguments):
     output_dir: str = "./output"
     # dataset and sampling strategy
     task_name: Union[str, list[str]] = "SST2"  # task name should match the string before Dataset in the Dataset
+    num_tasks_per_iteration: int = 1  # number of tasks to sample in each iteration
     # class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
     lr_scheduler_type: str = 'constant'
     # Number of examples
@@ -195,7 +196,7 @@ def set_seed(seed: int):
 
 class Framework:
 
-    def __init__(self, args, tasks):
+    def __init__(self, args, tasks, num_tasks_per_iteration=1):
 
         self.args = args
         self.tasks = tasks
@@ -203,6 +204,7 @@ class Framework:
             self.model_p, self.model, self.tokenizer = self.load_model()
         else:
             self.model, self.tokenizer = self.load_model()
+        self.num_tasks_per_iteration = num_tasks_per_iteration
 
     def load_model(self):
         """
@@ -224,7 +226,7 @@ class Framework:
                     torch_dtype = torch.bfloat16
                 # Head tuning
                 if "opt" in self.args.model_name.lower():
-                    from modeling_opt import OPTForCausalLM
+                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_opt import OPTForCausalLM
                     model = OPTForCausalLM.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -234,7 +236,7 @@ class Framework:
                         #             range(torch.cuda.device_count())},
                     )
                 elif "llama" in self.args.model_name.lower():
-                    from modeling_llama import LlamaForCausalLMWithHeadTuning
+                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_llama import LlamaForCausalLMWithHeadTuning
                     model = LlamaForCausalLMWithHeadTuning.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -244,7 +246,7 @@ class Framework:
                         #             range(torch.cuda.device_count())},
                     )
                 elif "mistral" in self.args.model_name.lower():
-                    from modeling_mistral import MistralForCausalLMWithHeadTuning
+                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_mistral import MistralForCausalLMWithHeadTuning
                     model = MistralForCausalLMWithHeadTuning.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -289,11 +291,11 @@ class Framework:
         if self.args.prefix_tuning:
             if "bilevel_minimax" in self.args.trainer:
                 raise NotImplementedError("Prefix tuning is not supported for bilevel minimax")
-            from prefix_tuning import PrefixTuning
+            from projects.bilevel_ZOFO.bilevel_zofo.peft.prefix_tuning import PrefixTuning
             PrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
                          float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
         if self.args.lora:
-            from lora import LoRA
+            from projects.bilevel_ZOFO.bilevel_zofo.peft.lora import LoRA
             model_s = copy.deepcopy(model)
             if "bilevel_minimax" in self.args.trainer:
                 LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
@@ -307,7 +309,7 @@ class Framework:
             print("Adding Prompt Tuning to model...")
             if "bilevel_minimax" in self.args.trainer:
 
-                from prompt_tuning import PromptTuningModel_with_model
+                from projects.bilevel_ZOFO.bilevel_zofo.peft.prompt_tuning import PromptTuningModel_with_model
                 original_model = copy.deepcopy(model)
                 PromptTuningModel_s = PromptTuningModel_with_model(
                     model,
@@ -334,7 +336,7 @@ class Framework:
                     sum(p.numel() for p in model.parameters() if p.requires_grad),
                 ))
             else:
-                from prompt_tuning import PromptTuning
+                from projects.bilevel_ZOFO.bilevel_zofo.peft.prompt_tuning import PromptTuning
                 PromptTuning(
                     model,
                     num_virtual_tokens=self.args.num_virtual_tokens,
@@ -643,6 +645,7 @@ class Framework:
                                                     self.tokenizer, pad_to_multiple_of=8),
                                                 tasks_eval_samples=tasks_eval_samples,
                                                 evaluate_func=self.evaluate,
+                                                num_tasks_per_iteration=self.num_tasks_per_iteration
                                                 )
         elif self.args.trainer == "bilevel_minimax_hyper_p":
             return
@@ -803,7 +806,7 @@ def main():
     train_sets = list(map(list, zip(*train_sets)))
 
     # Initialize trainer and load model
-    framework = Framework(args, tasks)
+    framework = Framework(args, tasks, args.num_tasks_per_iteration)
 
     # ZO-Bench Added
     # We add these parameters to evaluate the model during the training.

@@ -73,8 +73,8 @@ from transformers.utils import (
 from datasets import Dataset as HFDataset
 
 import wandb
-from metrics import f1
-from lora import MultiTaskLoRALinear
+from ..metrics import f1
+from ..peft.lora import MultiTaskLoRALinear
 
 _is_native_cpu_amp_available = True
 is_torch_less_than_1_11 = False
@@ -83,7 +83,7 @@ DEFAULT_CALLBACKS = [DefaultFlowCallback]
 DEFAULT_PROGRESS_CALLBACK = ProgressCallback
 
 if is_in_notebook():
-    from .utils.notebook import NotebookProgressCallback
+    from transformers.utils.notebook import NotebookProgressCallback
 
     DEFAULT_PROGRESS_CALLBACK = NotebookProgressCallback
 
@@ -100,7 +100,7 @@ if is_sagemaker_mp_enabled():
     from smdistributed.modelparallel import __version__ as SMP_VERSION
 
     IS_SAGEMAKER_MP_POST_1_10 = version.parse(SMP_VERSION) >= version.parse("1.10")
-    from .trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
+    from transformers.trainer_pt_utils import smp_forward_backward, smp_forward_only, smp_gather, smp_nested_concat
 else:
     IS_SAGEMAKER_MP_POST_1_10 = False
 
