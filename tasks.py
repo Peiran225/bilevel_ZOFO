@@ -15,16 +15,22 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_task(task_name):
-    aa = task_name.split("__")
-    if len(aa) == 2:
-        task_group, subtask = aa
-    else:
-        task_group = aa[0]
-        subtask = None
-    class_ = getattr(sys.modules[__name__], f"{task_group}Dataset")
-    instance = class_(subtask)
-    return instance
+def get_tasks(task_names):
+    if isinstance(task_names, str):
+        task_names = [task_names]
+    instances = []
+    for task_name in task_names:
+        aa = task_name.split("__")
+        if len(aa) == 2:
+            task_group, subtask = aa
+        else:
+            task_group = aa[0]
+            subtask = None
+        class_ = getattr(sys.modules[__name__], f"{task_group}Dataset")
+        instance = class_(subtask)
+        instances.append(instance)
+    return instances
+
 
 
 @dataclass
@@ -39,12 +45,15 @@ class Dataset:
     mixed_set = False
     train_sep = "\n\n"
     generation = False  # whether this is a generation task
+    subtask = None
 
     def __init__(self, subtask=None, **kwargs) -> None:
         self.samples = None
         self.subtask = subtask
 
     def get_task_name(self):
+        if self.subtask is None:
+            return f"{self.__class__.__name__}"
         return self.subtask
 
     def load_dataset(self, path, **kwargs):
@@ -104,6 +113,8 @@ class Dataset:
     def valid_samples(self):
         return self.samples["valid"]
 
+    def __str__(self):
+        return self.get_task_name()
 
 class SST2Dataset(Dataset):
     train_sep = "\n\n"

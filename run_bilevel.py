@@ -20,16 +20,16 @@ from metrics import calculate_metric
 #     MistralForCausalLM,
 #     MistralConfig
 # )
-from tasks import get_task
-from trainer import OurTrainer
+from tasks import get_tasks
+# from trainer import OurTrainer
 # from bilevel_minimax_trainer import OurBilevelMinimaxTrainer
 from bilevel_minimax_trainer2 import OurBilevelMinimaxTrainer2
 from utils import *
 
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 # AutoConfig.register("mistral", MistralConfig)
 # AutoModelForCausalLM.register(MistralConfig, MistralForCausalLM)
@@ -39,13 +39,13 @@ logger.setLevel(logging.INFO)
 class OurArguments(TrainingArguments):
     output_dir: str = "./output"
     # dataset and sampling strategy
-    task_name: str = "SST2"  # task name should match the string before Dataset in the Dataset class name.
-    # We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
+    task_name: Union[str, list[str]] = "SST2"  # task name should match the string before Dataset in the Dataset
+    # class name. We support the following task_name: SST2, RTE, CB, BoolQ, WSC, WIC, MultiRC, Copa, ReCoRD, SQuAD, DROP
     lr_scheduler_type: str = 'constant'
     # Number of examples
-    num_train: int = 0  # ICL mode: number of demonstrations; training mode: number of training samples
-    num_dev: int = None  # (only enabled with training) number of development samples
-    num_eval: int = None  # number of evaluation samples
+    num_train: list[int] = 0  # ICL mode: number of demonstrations; training mode: number of training samples
+    num_dev: list[int] = None  # (only enabled with training) number of development samples
+    num_eval: list[int] = None  # number of evaluation samples
     num_train_sets: int = None  # how many sets of training samples/demos to sample; if None and train_set_seed is None,
     # then we will sample one set for each evaluation sample
     train_set_seed: int = 0  # designated seed to sample training samples/demos
@@ -195,10 +195,10 @@ def set_seed(seed: int):
 
 class Framework:
 
-    def __init__(self, args, task):
+    def __init__(self, args, tasks):
 
         self.args = args
-        self.task = task
+        self.tasks = tasks
         if "bilevel_minimax" in self.args.trainer:
             self.model_p, self.model, self.tokenizer = self.load_model()
         else:
@@ -296,9 +296,11 @@ class Framework:
             from lora import LoRA
             model_s = copy.deepcopy(model)
             if "bilevel_minimax" in self.args.trainer:
-                LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16)
+                LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
+                     tasks=self.tasks)
 
-            LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16)
+            LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
+                 tasks=self.tasks)
 
         if self.args.prompt_tuning:
 
@@ -394,7 +396,7 @@ class Framework:
             # Only return the option (candidate) part
             return selected_log_probs[-option_len:]
 
-    def one_step_pred(self, train_samples, eval_sample, verbose=False):
+    def one_step_pred(self, task, train_samples, eval_sample, verbose=False):
         """
         Return the prediction on the eval sample. In ICL, use train_samples as demonstrations
         """
@@ -405,25 +407,25 @@ class Framework:
         #     logger.info(f"Correct candidate: {eval_sample.correct_candidate}")
 
         # Encode (add prompt and tokenize) the sample; if multiple-choice/classification, encode all candidates (options)
-        encoded_candidates, option_lens = encode_prompt(self.task,
-                                                        self.task.get_template(template_version=self.args.template_ver),
+        encoded_candidates, option_lens = encode_prompt(task,
+                                                        task.get_template(template_version=self.args.template_ver),
                                                         train_samples, eval_sample,
                                                         self.tokenizer, max_length=self.args.max_length,
-                                                        generation=self.task.generation,
+                                                        generation=task.generation,
                                                         max_new_tokens=self.args.max_new_tokens)
 
         # Calibration
         if self.args.sfc or self.args.icl_sfc:
-            sfc_encoded_candidates, sfc_option_lens = encode_prompt(self.task, self.task.get_template(
+            sfc_encoded_candidates, sfc_option_lens = encode_prompt(task, task.get_template(
                 template_version=self.args.template_ver), train_samples,
                                                                     eval_sample, self.tokenizer,
                                                                     max_length=self.args.max_length, sfc=self.args.sfc,
                                                                     icl_sfc=self.args.icl_sfc,
-                                                                    generation=self.task.generation,
+                                                                    generation=task.generation,
                                                                     max_new_tokens=self.args.max_new_tokens)
 
         outputs = []
-        if self.task.generation:
+        if task.generation:
             # For generation tasks, return the autoregressively-generated text
             output_text = self.forward(encoded_candidates[0], generation=True)
             # if verbose:
@@ -447,7 +449,12 @@ class Framework:
                 if self.args.sfc or self.args.icl_sfc:
                     sfc_selected_log_probs = self.forward(sfc_encoded_candidates[candidate_id],
                                                           option_len=sfc_option_lens[
-                                                              candidate_id])  # if verbose:  #     logger.info("=== Candidate %d (without context) SFC ===" % candidate_id)  #     logger.info(  #         self.tokenizer.decode(sfc_encoded_candidates[candidate_id]).split(self.task.train_sep)[-1])  #     logger.info(f"Log probabilities of the option tokens: {sfc_selected_log_probs}")
+                                                              candidate_id])
+                    # if verbose:
+                    #   logger.info("=== Candidate %d (without context) SFC ===" % candidate_id)
+                    #   logger.info(
+                    #       self.tokenizer.decode(sfc_encoded_candidates[candidate_id]).split(self.task.train_sep)[-1])
+                    #   logger.info(f"Log probabilities of the option tokens: {sfc_selected_log_probs}")
 
                 outputs.append({"log_probs": selected_log_probs,
                                 "sfc_log_probs": sfc_selected_log_probs if self.args.sfc or self.args.icl_sfc else None})
@@ -472,7 +479,7 @@ class Framework:
 
             return Prediction(correct_candidate=correct_candidate_id, predicted_candidate=int(np.argmax(scores)))
 
-    def evaluate(self, train_samples, eval_samples, one_train_set_per_eval_sample=False, description=None):
+    def evaluate(self, task, train_samples, eval_samples, one_train_set_per_eval_sample=False, description=None):
         """
         Evaluate function.
         Here, train_samples are used for demonstrations for ICL.
@@ -488,20 +495,23 @@ class Framework:
         predictions = []
         for eval_id, eval_sample in enumerate(tqdm(eval_samples, desc=description)):
             predictions.append(
-                self.one_step_pred(train_samples[eval_id] if one_train_set_per_eval_sample else train_samples,
+                self.one_step_pred(task, train_samples[eval_id] if one_train_set_per_eval_sample else train_samples,
                                    eval_sample, verbose=False))
 
         # Calculate metrics 
-        metric_name = getattr(self.task, "metric_name", "accuracy")
+        metric_name = getattr(task, "metric_name", "accuracy")
         metrics = {metric_name: calculate_metric(predictions, metric_name)}
         return metrics
 
-    def train(self, train_samples, dev_samples, eval_samples):
+    def train(self, tasks_train_samples, tasks_dev_samples, tasks_eval_samples):
         """
         Training function
         if self.num_dev is not None, eval_samples are dev_samples
         """
-        logger.info(f"Eval sample length is {len(eval_samples)}")
+
+        for i, task in enumerate(self.tasks):
+            logger.info(f"Training task {task} has {len(tasks_eval_samples[i])} eval samples")
+
         # Set tokenizer to left padding (so that all the options are right aligned)
         self.tokenizer.padding_side = "left"
 
@@ -516,19 +526,21 @@ class Framework:
             def __getitem__(self, idx):
                 return self.data[idx]
 
-        def _convert(samples):
+        def _convert(samples, task_index):
             """
             Convert samples to HF-compatible dataset
             """
             data = []
             for sample in samples:
-                encoded_candidates, option_lens = encode_prompt(self.task, self.task.get_template(
-                    template_version=self.args.template_ver), [], sample,
+                encoded_candidates, option_lens = encode_prompt(self.tasks[task_index],
+                                                                self.tasks[task_index].get_template(
+                                                                    template_version=self.args.template_ver), [],
+                                                                sample,
                                                                 self.tokenizer, max_length=self.args.max_length,
-                                                                generation=self.task.generation,
+                                                                generation=self.tasks[task_index].generation,
                                                                 generation_with_gold=True,
                                                                 max_new_tokens=self.args.max_new_tokens)
-                if self.task.generation:
+                if self.tasks[task_index].generation:
                     correct_candidate_id = 0
                 elif isinstance(sample.correct_candidate, list):
                     correct_candidate_id = sample.candidates.index(sample.correct_candidate[0])
@@ -563,9 +575,15 @@ class Framework:
             return data
 
         with count_time("Tokenizing training samples"):
-            train_dataset = HFDataset(_convert(train_samples))
-            eval_dataset = HFDataset(_convert(eval_samples))
-            dev_dataset = HFDataset(_convert(dev_samples))
+            train_datasets = [HFDataset(_convert(train_samples, i)) for i, train_samples in
+                              enumerate(tasks_train_samples)]
+            eval_datasets = [HFDataset(_convert(eval_samples, i)) for i, eval_samples in enumerate(tasks_eval_samples)]
+            dev_datasets = [HFDataset(_convert(dev_samples, i)) for i, dev_samples in enumerate(tasks_dev_samples)]
+
+            # concatenate all the datasets
+            train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+            eval_dataset = torch.utils.data.ConcatDataset(eval_datasets)
+            dev_dataset = torch.utils.data.ConcatDataset(dev_datasets)
 
         if self.args.only_train_option and not self.args.non_diff:
             # If --only_train_option and not with a non-differentiable objective, we wrap the forward function
@@ -582,34 +600,35 @@ class Framework:
 
         print(self.args)
         if self.args.trainer == "bilevel_minimax":
-            self.lower_level_training_args = TrainingArguments(
-                output_dir="lower_level_output/model",
-                learning_rate=self.args.lower_level_learning_rate,  # 1e-3
-                per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
-                per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
-                num_train_epochs=self.args.lower_level_num_train_epochs,
-                max_steps=self.args.lower_level_num_train_steps,
-                evaluation_strategy="no",
-                save_strategy="no",
-                load_best_model_at_end=True,
-                lr_scheduler_type="constant",
-                seed=self.args.train_set_seed
-            )
-            trainer = OurBilevelMinimaxTrainer(model=self.model,
-                                               model_s=self.model_s,
-                                               args=self.args,
-                                               lower_level_training_args=self.lower_level_training_args,
-                                               lower_train_dataset=dev_dataset,
-                                               train_dataset=train_dataset,
-                                               eval_dataset=eval_dataset,
-                                               tokenizer=self.tokenizer,
-                                               data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                                               pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                                   self.tokenizer, pad_to_multiple_of=8),
-                                               eval_samples=eval_samples,
-                                               dev_samples=dev_samples,
-                                               evaluate_func=self.evaluate,
-                                               )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
+            return
+            # self.lower_level_training_args = TrainingArguments(
+            #     output_dir="lower_level_output/model",
+            #     learning_rate=self.args.lower_level_learning_rate,  # 1e-3
+            #     per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
+            #     per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
+            #     num_train_epochs=self.args.lower_level_num_train_epochs,
+            #     max_steps=self.args.lower_level_num_train_steps,
+            #     evaluation_strategy="no",
+            #     save_strategy="no",
+            #     load_best_model_at_end=True,
+            #     lr_scheduler_type="constant",
+            #     seed=self.args.train_set_seed
+            # )
+            # trainer = OurBilevelMinimaxTrainer(model=self.model,
+            #                                    model_s=self.model_s,
+            #                                    args=self.args,
+            #                                    lower_level_training_args=self.lower_level_training_args,
+            #                                    lower_train_dataset=dev_dataset,
+            #                                    train_dataset=train_dataset,
+            #                                    eval_dataset=eval_dataset,
+            #                                    tokenizer=self.tokenizer,
+            #                                    data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+            #                                                                                    pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+            #                                        self.tokenizer, pad_to_multiple_of=8),
+            #                                    eval_samples=eval_samples,
+            #                                    dev_samples=dev_samples,
+            #                                    evaluate_func=self.evaluate,
+            #                                    )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
         elif self.args.trainer == "bilevel_minimax2":
             trainer = OurBilevelMinimaxTrainer2(model=self.model,
                                                 model_p=self.model_p,
@@ -618,41 +637,44 @@ class Framework:
                                                 eval_dataset=eval_dataset,
                                                 dev_dataset=dev_dataset,
                                                 tokenizer=self.tokenizer,
+                                                tasks=self.tasks,
                                                 data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
                                                                                                 pad_to_multiple_of=8) if self.args.train_as_classification else collator(
                                                     self.tokenizer, pad_to_multiple_of=8),
-                                                eval_samples=eval_samples,
+                                                tasks_eval_samples=tasks_eval_samples,
                                                 evaluate_func=self.evaluate,
                                                 )
         elif self.args.trainer == "bilevel_minimax_hyper_p":
-            trainer = OurBilevelMinimaxTrainer(model=self.model,
-                                               model_s=self.model_s,
-                                               args=self.args,
-                                               lower_level_training_args=self.lower_level_training_args,
-                                               lower_train_dataset=dev_dataset,
-                                               train_dataset=train_dataset,
-                                               eval_dataset=eval_dataset,
-                                               tokenizer=self.tokenizer,
-                                               data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                                               pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                                   self.tokenizer, pad_to_multiple_of=8),
-                                               eval_samples=eval_samples,
-                                               dev_samples=dev_samples,
-                                               evaluate_func=self.evaluate,
-                                               )
+            return
+            # trainer = OurBilevelMinimaxTrainer(model=self.model,
+            #                                    model_s=self.model_s,
+            #                                    args=self.args,
+            #                                    lower_level_training_args=self.lower_level_training_args,
+            #                                    lower_train_dataset=dev_dataset,
+            #                                    train_dataset=train_dataset,
+            #                                    eval_dataset=eval_dataset,
+            #                                    tokenizer=self.tokenizer,
+            #                                    data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+            #                                                                                    pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+            #                                        self.tokenizer, pad_to_multiple_of=8),
+            #                                    eval_samples=eval_samples,
+            #                                    dev_samples=dev_samples,
+            #                                    evaluate_func=self.evaluate,
+            #                                    )
         else:
-            trainer = OurTrainer(model=self.model,
-                                 args=self.args,
-                                 train_dataset=train_dataset,
-                                 eval_dataset=eval_dataset,
-                                 tokenizer=self.tokenizer,
-                                 data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-                                                                                 pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-                                     self.tokenizer, pad_to_multiple_of=8),
-                                 eval_samples=eval_samples,
-                                 dev_samples=dev_samples,
-                                 evaluate_func=self.evaluate,
-                                 )
+            return
+            # trainer = OurTrainer(model=self.model,
+            #                      args=self.args,
+            #                      train_dataset=train_dataset,
+            #                      eval_dataset=eval_dataset,
+            #                      tokenizer=self.tokenizer,
+            #                      data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
+            #                                                                      pad_to_multiple_of=8) if self.args.train_as_classification else collator(
+            #                          self.tokenizer, pad_to_multiple_of=8),
+            #                      eval_samples=eval_samples,
+            #                      dev_samples=dev_samples,
+            #                      evaluate_func=self.evaluate,
+            #                      )
 
         if self.args.save_on_interrupt:
             trainer.add_callback(SIGUSR1Callback())
@@ -747,16 +769,41 @@ def main():
     wandb.init(project='zo-bench', entity="rezashkv", name=args.tag, config=args)
 
     set_seed(args.seed)
-    task = get_task(args.task_name)
+    tasks = get_tasks(args.task_name)
+
+    if len(args.num_train) < len(tasks):
+        assert len(args.num_train) == 1, "If you want to use the same number of training samples for all tasks, " \
+                                         "please provide only one number"
+        args.num_train = [args.num_train[0]] * len(tasks)
+    if args.num_dev is None or len(args.num_dev) < len(tasks):
+        assert args.num_dev is None or len(
+            args.num_dev) == 1, "If you want to use the same number of dev samples for all tasks, " \
+                                "please provide only one number"
+        if args.num_dev is None:
+            args.num_dev = [None] * len(tasks)
+        else:
+            args.num_dev = [args.num_dev[0]] * len(tasks)
+    if args.num_eval is None or len(args.num_eval) < len(tasks):
+        assert args.num_eval is None or len(
+            args.num_eval) == 1, "If you want to use the same number of eval samples for all tasks, " \
+                                 "please provide only one number"
+        if args.num_eval is None:
+            args.num_eval = [None] * len(tasks)
+        else:
+            args.num_eval = [args.num_eval[0]] * len(tasks)
 
     # This function samples both training and validation samples.
     # The validation (dev) samples are also stored in "train_sets"
     # Later the train_samples and dev_samples are separated
-    train_sets = task.sample_train_sets(num_train=args.num_train, num_dev=args.num_dev, num_eval=args.num_eval,
-                                        num_train_sets=args.num_train_sets, seed=args.train_set_seed)
+    train_sets = [
+        tasks[i].sample_train_sets(num_train=args.num_train[i], num_dev=args.num_dev[i], num_eval=args.num_eval[i],
+                                   num_train_sets=args.num_train_sets, seed=args.train_set_seed) for i in
+        range(len(tasks))]
+
+    train_sets = list(map(list, zip(*train_sets)))
 
     # Initialize trainer and load model
-    framework = Framework(args, task)
+    framework = Framework(args, tasks)
 
     # ZO-Bench Added
     # We add these parameters to evaluate the model during the training.
@@ -769,61 +816,78 @@ def main():
         # Training goes to this way
 
         # Eval samples share one (or multiple) training set(s)
-        for train_set_id, train_samples in enumerate(train_sets):
+        for train_set_id, tasks_train_samples in enumerate(train_sets):
             train_set_seed = train_set_id if args.train_set_seed is None else args.train_set_seed
 
-            # Sample eval samples
-            if args.num_eval is not None:
-                eval_samples = task.sample_subset(data_split="valid", seed=train_set_seed, num=args.num_eval)
-            else:
-                eval_samples = task.valid_samples
-
-            if args.trainer != "none":
-                # Here the training samples are seperated
-                if args.num_dev is not None:
-                    # Dev samples
-                    # assert args.num_dev + args.num_train <= len(train_samples), f"num_dev({args.num_dev})+num_train({args.num_train}) is more than actual num of training samples ({len(train_samples)})."
-                    dev_samples = train_samples[-args.num_dev:]
-                    train_samples = train_samples[:-args.num_dev]
-                    logger.info("Dev samples: %d" % len(dev_samples))
-                    logger.info("Train samples: %d" % len(train_samples))
+            tasks_eval_samples = []
+            for i, task in enumerate(tasks):
+                num_eval = args.num_eval[i]
+                if num_eval is not None:
+                    eval_samples = task.sample_subset(data_split="valid", seed=train_set_seed, num=num_eval)
                 else:
-                    dev_samples = None
-                    logger.info("Train samples: %d" % len(train_samples))
-                    logger.info("No dev samples")
+                    eval_samples = task.valid_samples
+                tasks_eval_samples.append(eval_samples)
 
-                args.dev_samples = dev_samples
-                args.eval_samples = eval_samples
+            tasks_dev_samples = []
+            if args.trainer != "none":
+                for i, task in enumerate(args.task_name):
+                    num_dev = args.num_dev[i]
+                    if num_dev is not None:
+                        dev_samples = tasks_train_samples[i][-num_dev:]
+                        tasks_train_samples[i] = tasks_train_samples[i][:-num_dev]
+                        logger.info(f"Task {task} has {len(tasks_train_samples[i])} training samples "
+                                    f"and {len(dev_samples)} dev samples")
+                    else:
+                        dev_samples = None
+                        logger.info(f"Task {task} has {len(tasks_train_samples[i])} training samples "
+                                    f"and no dev samples")
+                    tasks_dev_samples.append(dev_samples)
+
+                args.tasks_dev_samples = tasks_dev_samples
+                args.tasks_eval_samples = tasks_eval_samples
 
                 # Training
-                framework.train(train_samples, dev_samples if dev_samples is not None else eval_samples, eval_samples)
-
+                framework.train(tasks_train_samples,
+                                tasks_dev_samples if tasks_dev_samples is not None else tasks_eval_samples,
+                                tasks_eval_samples)
+                tasks_metrics = []
                 if not args.no_eval:  # This is True
-                    metrics = framework.evaluate([], eval_samples, description="Evaluating on the Test Set")
-                    _keys = list(metrics.keys())
-                    for m in _keys:
-                        metrics["test_" + m] = metrics[m]
-                    if dev_samples is not None:
-                        dev_metrics = framework.evaluate(
-                            [], dev_samples, description="Evaluating on the Validation Set"
-                        )
-                        _keys = list(dev_metrics.keys())
+                    tasks_metrics = [framework.evaluate(tasks[i], [], tasks_eval_samples[i],
+                                                        description="Evaluating on the Test Set")
+                                     for i in range(len(tasks))]
+                    for i, task in enumerate(args.task_name):
+                        metrics = tasks_metrics[i]
+                        metrics["task"] = task
+                        _keys = list(metrics.keys())
                         for m in _keys:
-                            metrics["val_" + m] = dev_metrics[m]
+                            metrics["test_" + m] = metrics[m]
+                        if tasks_dev_samples is not None:
+                            dev_metrics = framework.evaluate(framework.tasks[i],
+                                                             [], tasks_dev_samples[i],
+                                                             description="Evaluating on the Validation Set"
+                                                             )
+                            _keys = list(dev_metrics.keys())
+                            for m in _keys:
+                                metrics["val_" + m] = dev_metrics[m]
             else:
                 assert args.num_dev is None
                 # Zero-shot / in-context learning
-                metrics = framework.evaluate(train_samples, eval_samples)
-            logger.info(metrics)
-            wandb.log(metrics)
+                tasks_metrics = []
+                for i, task in enumerate(framework.tasks):
+                    tasks_metrics.append(framework.evaluate(task, tasks_train_samples[i], tasks_eval_samples[i]))
+            for task_metrics in tasks_metrics:
+                logger.info(task_metrics)
+                wandb.log(task_metrics)
 
             if not args.no_eval:
                 logger.info("===== Train set %d =====" % train_set_seed)
-                logger.info(metrics)
-                wandb.log(metrics)
-                if args.local_rank <= 0:
-                    write_metrics_to_file(metrics, "result/" + result_file_tag(
-                        args) + f"-trainset{train_set_id}.json" if args.result_file is None else args.result_file)
+                for i, task_metrics in enumerate(tasks_metrics):
+                    task = args.task_name[i]
+                    logger.info(task_metrics)
+                    wandb.log(task_metrics)
+                    if args.local_rank <= 0:
+                        write_metrics_to_file(task_metrics, "result/" + result_file_tag(
+                            args) + f"-trainset{train_set_id}-task{task}.json" if args.result_file is None else args.result_file)
             if args.trainer != "none" and args.clean_model_at_end:
                 framework.delete_checkpoints()
 
@@ -831,16 +895,24 @@ def main():
         # For each eval sample, there is a training set. no training is allowed
         # This is for in-context learning (ICL)
         assert args.trainer == "none"
-        if args.num_eval is not None:
-            eval_samples = task.sample_subset(data_split="valid", seed=0, num=args.num_eval)
-        else:
-            eval_samples = task.valid_samples
-        metrics = framework.evaluate(train_sets, eval_samples, one_train_set_per_eval_sample=True)
-        logger.info(metrics)
-        wandb.log(metrics)
-        if args.local_rank <= 0:
-            write_metrics_to_file(metrics, "result/" + result_file_tag(
-                args) + "-onetrainpereval.json" if args.result_file is None else args.result_file)
+
+        tasks_eval_samples = []
+        for i, task in enumerate(tasks):
+            num_eval = args.num_eval[i]
+            if num_eval is not None:
+                eval_samples = task.sample_subset(data_split="valid", seed=0, num=num_eval)
+            else:
+                eval_samples = task.valid_samples
+            tasks_eval_samples.append(eval_samples)
+
+        tasks_metrics = [framework.evaluate(framework.tasks[i], train_sets[i], tasks_eval_samples[i],
+                                            one_train_set_per_eval_sample=True) for i in range(len(tasks))]
+        for i, task_metrics in enumerate(tasks_metrics):
+            logger.info(task_metrics)
+            wandb.log(task_metrics)
+            if args.local_rank <= 0:
+                write_metrics_to_file(task_metrics, "result/" + result_file_tag(
+                    args) + f"task-{tasks[i]}-onetrainpereval.json" if args.result_file is None else args.result_file)
 
 
 if __name__ == "__main__":

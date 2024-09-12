@@ -125,13 +125,14 @@ SCALER_NAME = "scaler.pt"
 class OurBilevelMinimaxTrainer2(Trainer):
 
     # ZO-Bench added: new parameters to our trainer
-    def __init__(self, model_p, evaluate_func, dev_dataset, eval_samples, *args, **kwargs):
+    def __init__(self, model_p, evaluate_func, dev_dataset, tasks_eval_samples, tasks, *args, **kwargs):
         super().__init__(*args, **kwargs)  # Initialize the base class
         self.evaluate_func = evaluate_func
         self.dev_dataset = dev_dataset
-        self.eval_samples = eval_samples
+        self.eval_samples = tasks_eval_samples
         self.model_p = model_p
         self.do_grad_scaling = False
+        self.tasks = tasks
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -694,6 +695,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
 
                 # check whether to do upper level update:
                 if (total_steps + 1) % self.args.lower_level_num_train_steps == 0:
+                    torch.cuda.empty_cache()
                     print('perform the outer loop')
                     try:
                         inputs_f = next(dev_iterator)
@@ -724,18 +726,20 @@ class OurBilevelMinimaxTrainer2(Trainer):
                     print(
                         f"=========================> Evaluating at step {total_steps + 1}... <=========================")
                     # val_metrics = self.evaluate_func([], self.dev_samples)
-                    test_metrics = self.evaluate_func([], self.eval_samples)
-                    if "accuracy" in test_metrics:
-                        self.log({"test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
-                        wandb.log({"test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
-                    else:
-                        keys = list(test_metrics.keys())
-                        log_dict = {}
-                        for k in keys:
-                            log_dict['test_' + k] = test_metrics[k]
-                            # log_dict['val_' + k] = val_metrics[k]
-                        self.log(log_dict)
-                        wandb.log(log_dict)
+                    for i, task_eval_samples in enumerate(self.eval_samples):
+                        task = self.tasks[i]
+                        test_metrics = self.evaluate_func(task, [], task_eval_samples)
+                        if "accuracy" in test_metrics:
+                            self.log({f"{task}-test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
+                            wandb.log({f"{task}-test_acc": test_metrics["accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
+                        else:
+                            keys = list(test_metrics.keys())
+                            log_dict = {}
+                            for k in keys:
+                                log_dict[f'task{task}-test_' + k] = test_metrics[k]
+                                # log_dict['val_' + k] = val_metrics[k]
+                            self.log(log_dict)
+                            wandb.log(log_dict)
 
                 max_memory_allocated = 0
                 for device_id in range(torch.cuda.device_count()):
