@@ -130,7 +130,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
         self.do_grad_scaling = False
         self.tasks = tasks
         self.num_tasks_per_iteration = min(num_tasks_per_iteration, len(tasks))
-        self.sampled_tasks = np.random.choice(len(tasks), self.num_tasks_per_iteration, replace=False).sort()
+        self.sampled_tasks = np.sort(np.random.choice(len(tasks), self.num_tasks_per_iteration, replace=False))
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -549,10 +549,10 @@ class OurBilevelMinimaxTrainer2(Trainer):
             for step, batch in enumerate(epoch_iterator):
                 total_batched_samples += 1
                 total_steps += 1
-                for task_ind, inputs in enumerate(batch):
+                for task in batch:
+                    inputs = batch[task]
                     if self.args.lora:
-                        active_task = str(self.tasks[self.sampled_tasks[task_ind]])
-                        self.set_active_lora(active_task)
+                        self.set_active_lora(model, task)
 
                     if self.args.include_num_input_tokens_seen:
                         main_input_name = getattr(self.model, "main_input_name", "input_ids")
@@ -701,18 +701,27 @@ class OurBilevelMinimaxTrainer2(Trainer):
                     torch.cuda.empty_cache()
                     print('perform the outer loop')
                     try:
-                        inputs_f = next(dev_iterator)
+                        tasks_inputs_f = next(dev_iterator)
                     except:
                         dev_iterator = iter(dev_dataloader)
 
                     try:
-                        inputs_p = next(train_iterator_p)
+                        tasks_inputs_p = next(train_iterator_p)
                     except:
                         train_iterator_p = iter(train_dataloader)
 
-                    self.compute_grad_p(self.model_p, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval)
-                    self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
-                    self.bilevel_upper_step(self.model_p)
+                    for task in tasks_inputs_f:
+                        inputs_f = tasks_inputs_f[task]
+                        inputs_p = tasks_inputs_p[task]
+
+                        if self.args.lora:
+                            self.set_active_lora(self.model_p, task)
+
+                        self.compute_grad_p(self.model_p, model, inputs_f, inputs_p, task, epoch, ignore_keys_for_eval)
+                        self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
+                        self.bilevel_upper_step(self.model_p)
+
+
                     self.sampled_tasks = np.random.choice(range(len(self.tasks)), self.num_tasks_per_iteration,
                                                           replace=False)
 
@@ -1561,6 +1570,19 @@ class OurBilevelMinimaxTrainer2(Trainer):
             self._signature_columns += list(set(["label", "label_ids"] + self.label_names))
             self._signature_columns += ["gold"]
 
+    # Custom function to interleave batches (as a list of mini-batches, one from each dataset)
+    def interleave_batches(self, loaders):
+        iter_loaders = [(str(self.tasks[i]), iter(loader)) for i, loader in enumerate(loaders) if
+                        i in self.sampled_tasks]
+        while True:
+            batch = {}
+            for task, loader_iter in iter_loaders:
+                try:
+                    batch[task] = (next(loader_iter))  # Append mini-batch (dict) from each dataset
+                except StopIteration:
+                    return  # Stop when one loader is exhausted
+            yield batch  # Yield a list of mini-batch
+
     def get_dev_dataloader(self) -> DataLoader:
         """
         Returns the training [`~torch.utils.data.DataLoader`].
@@ -1589,7 +1611,6 @@ class OurBilevelMinimaxTrainer2(Trainer):
         }
 
         if not isinstance(dev_dataset, torch.utils.data.IterableDataset):
-            # dataloader_params["sampler"] = self._get_train_sampler()
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
@@ -1609,20 +1630,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 )
                 loaders.append(loader)
 
-            # Custom function to interleave batches (as a list of mini-batches, one from each dataset)
-            def interleave_batches(loaders):
-                iter_loaders = [iter(loader) for loader in loaders]
-                while True:
-                    batch = []
-                    for loader_iter in iter_loaders:
-                        try:
-                            batch.append(next(loader_iter))  # Append mini-batch (dict) from each dataset
-                        except StopIteration:
-                            return  # Stop when one loader is exhausted
-                    yield batch  # Yield a list of mini-batches (one for each dataset)
-
             # Return a DataLoader that yields lists of mini-batches
-            return self.accelerator.prepare(interleave_batches(loaders))
+            return self.accelerator.prepare(self.interleave_batches(loaders))
 
         # Default dataloader for non-ConcatDataset (fallback)
         else:
@@ -1679,20 +1688,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 )
                 loaders.append(loader)
 
-            # Custom function to interleave batches (as a list of mini-batches, one from each dataset)
-            def interleave_batches(loaders):
-                iter_loaders = [iter(loader) for i, loader in enumerate(loaders) if i in self.sampled_tasks]
-                while True:
-                    batch = []
-                    for loader_iter in iter_loaders:
-                        try:
-                            batch.append(next(loader_iter))  # Append mini-batch (dict) from each dataset
-                        except StopIteration:
-                            return  # Stop when one loader is exhausted
-                    yield batch  # Yield a list of mini-batches (one for each dataset)
-
             # Return a DataLoader that yields lists of mini-batches
-            return self.accelerator.prepare(interleave_batches(loaders))
+            return self.accelerator.prepare(self.interleave_batches(loaders))
 
         # Default dataloader for non-ConcatDataset (fallback)
         else:
@@ -1701,8 +1698,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                                                                                        torch.utils.data.IterableDataset) else None
             return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
-    def set_active_lora(self, task):
-        # iterate through the model to set the active lora if the module is an instance of MultiTaskLoRALinear
-        for key, module in self.model.named_modules():
+    @staticmethod
+    def set_active_lora(model, task):
+        for module in model.modules():
             if isinstance(module, MultiTaskLoRALinear):
                 module.set_active_lora(task)

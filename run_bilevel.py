@@ -226,7 +226,7 @@ class Framework:
                     torch_dtype = torch.bfloat16
                 # Head tuning
                 if "opt" in self.args.model_name.lower():
-                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_opt import OPTForCausalLM
+                    from bilevel_zofo.models.modeling_opt import OPTForCausalLM
                     model = OPTForCausalLM.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -236,7 +236,7 @@ class Framework:
                         #             range(torch.cuda.device_count())},
                     )
                 elif "llama" in self.args.model_name.lower():
-                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_llama import LlamaForCausalLMWithHeadTuning
+                    from bilevel_zofo.models.modeling_llama import LlamaForCausalLMWithHeadTuning
                     model = LlamaForCausalLMWithHeadTuning.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -246,7 +246,7 @@ class Framework:
                         #             range(torch.cuda.device_count())},
                     )
                 elif "mistral" in self.args.model_name.lower():
-                    from projects.bilevel_ZOFO.bilevel_zofo.models.modeling_mistral import MistralForCausalLMWithHeadTuning
+                    from bilevel_zofo.models.modeling_mistral import MistralForCausalLMWithHeadTuning
                     model = MistralForCausalLMWithHeadTuning.from_pretrained(
                         self.args.model_name,
                         config=config,
@@ -291,13 +291,13 @@ class Framework:
         if self.args.prefix_tuning:
             if "bilevel_minimax" in self.args.trainer:
                 raise NotImplementedError("Prefix tuning is not supported for bilevel minimax")
-            from projects.bilevel_ZOFO.bilevel_zofo.peft.prefix_tuning import PrefixTuning
+            from bilevel_zofo.peft.prefix_tuning import PrefixTuning
             PrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
                          float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
         if self.args.lora:
-            from projects.bilevel_ZOFO.bilevel_zofo.peft.lora import LoRA
-            model_s = copy.deepcopy(model)
+            from bilevel_zofo.peft.lora import LoRA
             if "bilevel_minimax" in self.args.trainer:
+                model_s = copy.deepcopy(model)
                 LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
                      tasks=self.tasks)
 
@@ -309,7 +309,7 @@ class Framework:
             print("Adding Prompt Tuning to model...")
             if "bilevel_minimax" in self.args.trainer:
 
-                from projects.bilevel_ZOFO.bilevel_zofo.peft.prompt_tuning import PromptTuningModel_with_model
+                from bilevel_zofo.peft.prompt_tuning import PromptTuningModel_with_model
                 original_model = copy.deepcopy(model)
                 PromptTuningModel_s = PromptTuningModel_with_model(
                     model,
@@ -336,7 +336,7 @@ class Framework:
                     sum(p.numel() for p in model.parameters() if p.requires_grad),
                 ))
             else:
-                from projects.bilevel_ZOFO.bilevel_zofo.peft.prompt_tuning import PromptTuning
+                from bilevel_zofo.peft.prompt_tuning import PromptTuning
                 PromptTuning(
                     model,
                     num_virtual_tokens=self.args.num_virtual_tokens,
