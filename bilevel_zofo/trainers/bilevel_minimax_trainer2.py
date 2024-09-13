@@ -131,6 +131,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
         self.tasks = tasks
         self.num_tasks_per_iteration = min(num_tasks_per_iteration, len(tasks))
         self.sampled_tasks = np.sort(np.random.choice(len(tasks), self.num_tasks_per_iteration, replace=False))
+        logger.info(f"Sampled tasks: {[self.tasks[i] for i in self.sampled_tasks]}")
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -160,6 +161,7 @@ class OurBilevelMinimaxTrainer2(Trainer):
 
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
+        train_dataloader_p = self.get_train_dataloader()
 
         if self.is_fsdp_xla_v2_enabled:
             train_dataloader = tpu_spmd_dataloader(train_dataloader)
@@ -543,8 +545,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                 rng_to_sync = True
 
             step = -1
+            train_iterator_p = iter(train_dataloader_p)
             dev_iterator = iter(dev_dataloader)
-            train_iterator_p = iter(train_dataloader)
             # for step, inputs in enumerate(epoch_iterator):
             for step, batch in enumerate(epoch_iterator):
                 total_batched_samples += 1
@@ -702,15 +704,16 @@ class OurBilevelMinimaxTrainer2(Trainer):
                     print('perform the outer loop')
                     try:
                         tasks_inputs_f = next(dev_iterator)
-                    except:
-                        dev_iterator = iter(dev_dataloader)
+                    except StopIteration:
+                        break
 
                     try:
                         tasks_inputs_p = next(train_iterator_p)
-                    except:
-                        train_iterator_p = iter(train_dataloader)
+                    except StopIteration:
+                        break
 
                     for task in tasks_inputs_f:
+                        torch.cuda.empty_cache()
                         inputs_f = tasks_inputs_f[task]
                         inputs_p = tasks_inputs_p[task]
 
@@ -721,9 +724,8 @@ class OurBilevelMinimaxTrainer2(Trainer):
                         self.compute_zo_grad_theta(self.model_p, model, inputs_f, inputs_p)
                         self.bilevel_upper_step(self.model_p)
 
-
-                    self.sampled_tasks = np.random.choice(range(len(self.tasks)), self.num_tasks_per_iteration,
-                                                          replace=False)
+                    self.sampled_tasks = np.random.choice(len(self.tasks), self.num_tasks_per_iteration, replace=False)
+                    logger.info(f"Sampled tasks: {[self.tasks[i] for i in self.sampled_tasks]}")
 
                 # torch.cuda.synchronize()
                 train_step_duration = time.time() - step_start_time

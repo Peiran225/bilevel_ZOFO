@@ -769,7 +769,8 @@ def main():
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
 
-    wandb.init(project='zo-bench', entity="rezashkv", name=args.tag, config=args)
+    wandb.init(project='zo-bench', entity="rezashkv", name=args.tag, config=vars(args),
+               dir=args.output_dir)
 
     set_seed(args.seed)
     tasks = get_tasks(args.task_name)
