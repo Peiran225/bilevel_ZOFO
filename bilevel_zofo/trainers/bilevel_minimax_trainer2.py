@@ -33,10 +33,10 @@ from packaging import version
 from sklearn.linear_model import LogisticRegressionCV
 from torch import nn
 from torch.func import functional_call, jvp
-from torch.optim import SGD, Adam, AdamW
+from torch.optim import SGD, Adam, Adam
 from torch.utils.data import DataLoader, RandomSampler, SubsetRandomSampler
 from tqdm.auto import tqdm
-from transformers import Trainer, is_torch_xla_available
+from transformers import Trainer, is_torch_xla_available, AdamW
 from transformers.debug_utils import DebugOption, DebugUnderflowOverflow
 from transformers.deepspeed import deepspeed_init
 # Integrations must be imported before ML frameworks:

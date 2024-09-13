@@ -763,8 +763,8 @@ def main():
 
     args.tag = "momen" + args.tag if args.momentum > 0 else args.tag
     args.run_name = args.tag
-    args.output_dir = f"result/{args.tag}"
-    args.result_file = f"result/{args.tag}/results.json"
+    args.output_dir = f"{args.output_dir}/{args.tag}"
+    args.result_file = f"{args.output_dir}/{args.tag}/results.json"
     os.makedirs(args.output_dir, exist_ok=True)
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
