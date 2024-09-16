@@ -1,4 +1,4 @@
-name: bilevel_adamw_cls
+name: bilevel2_adam_cls_prompt
 project: zo_bench
 command:
 - ${interpreter}
@@ -8,48 +8,48 @@ command:
 - "--num_virtual_tokens=10"
 - "--prompt_init_by_real_tokens"
 - "--model_name=facebook/opt-1.3b"
-- "--task_name=SST2"
-- "--output_dir=result/SST2-bilevel-ft-$TAG"
-- "--num_train_epochs=5"
+- "--training_tasks=SST2"
+- "--test_tasks=SST2"
+- "--output_dir=/beacon-scratch/rezashkv/research/results/zofo-bilevel"
+- "--num_train_epochs=1000"
 - "--per_device_train_batch_size=16"
 - "--load_best_model_at_end"
 - "--evaluation_strategy=steps"
 - "--save_strategy=steps"
 - "--save_total_limit=1"
-- "--eval_steps=1000"
-- "--max_steps=20000"
+- "--max_steps=5000"
 - "--logging_steps=10"
 - "--num_eval=1000"
 - "--num_train=1000"
 - "--num_dev=500"
 - "--train_as_classification"
 - "--perturbation_mode=two_side"
-- "--trainer=bilevel_minimax"
-- "--optimizer=adamw"
+- "--trainer=bilevel_minimax2"
+- "--optimizer=adam"
 - "--train_set_seed=0"
 - "--lr_scheduler_type=constant"
 - "--eval_steps=500"
 - "--save_steps=500"
-- "--Lambda=0"
-- "--lower_level_learning_rate=1e-3"
-- "--lower_level_per_device_train_batch_size=16"
-- "--lower_level_per_device_eval_batch_size=16"
-- "--lower_level_num_train_epochs=1"
-- "--lower_level_num_train_steps=0"
+- "--weight_decay=0"
+- "--Lambda=1e4"
+- "--learning_rate=1e-4"
+- "--upper_optimizer=adam"
+- "--upper_momentum=0.0"
+- "--zo_eps=1e-3"
 method: grid
 metric:
   goal: maximize
   name: test_acc
 parameters:
-  learning_rate:
+  upper_learning_rate: 
     values:
-      - 1e-2
-      # - 1e-3
       - 1e-4
-      # - 1e-5
       - 1e-6
-  weight_decay:
+      - 1e-8
+  lower_level_num_train_steps:
     values:
-      - 0
+      - 10
+      - 50
+  
 
 program: run_bilevel.py

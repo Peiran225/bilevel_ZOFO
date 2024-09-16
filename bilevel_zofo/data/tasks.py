@@ -84,7 +84,6 @@ class Dataset:
         for i, set_seed in enumerate(seeds):
             if self.mixed_set:  # This is always False for now
                 raise NotImplementedError
-                train_samples.append(self.sample_subset(data_split="valid", seed=set_seed, num=num_train, exclude=i))
             else:
                 if num_dev is not None:
                     train_samples.append(self.sample_subset(data_split="train", seed=set_seed,
@@ -115,6 +114,7 @@ class Dataset:
 
     def __str__(self):
         return self.get_task_name()
+
 
 class SST2Dataset(Dataset):
     train_sep = "\n\n"
