@@ -9,6 +9,7 @@ from datasets import load_dataset
 from .templates import *
 from ..utils import temp_seed
 import os
+
 os.environ["HF_DATASETS_CACHE"] = "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/data"
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,6 @@ def get_tasks(task_names):
         instance = class_(subtask)
         instances.append(instance)
     return instances
-
 
 
 @dataclass
@@ -368,8 +368,8 @@ class RTEDataset(Dataset):
 
 
 class SQuADDataset(Dataset):
-    metric_name = "f1"
     generation = True
+    metric_name = "f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
         self.load_dataset()
@@ -469,3 +469,478 @@ class WinoGrandeDataset(Dataset):
             return WinoGrandeTemplate()
         else:
             raise NotImplementedError(f"Template version {template_version} not implemented for WinoGrande")
+
+
+class TweetEvalSentimentDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'sentiment')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalSentimentTemplate, 1: TweetEvalSentimentTemplateEmpty}[template_version]()
+
+
+class IMDBDataset(Dataset):
+    train_sep = "\n\n"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('imdb')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: IMDBTemplate, 1: IMDBTemplateEmpty}[template_version]()
+
+
+class RottenTomatoesDataset(Dataset):
+    train_sep = "\n\n"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('rotten_tomatoes')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: RottenTomatoesTemplate, 1: RottenTomatoesTemplateEmpty}[template_version]()
+
+
+class EmotionDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('emotion', 'split')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3, 4, 5])
+
+    def get_template(self, template_version=0):
+        return {0: EmotionTemplate}[template_version]()
+
+
+class TweetEvalEmotionDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'emotion')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalEmotionTemplate}[template_version]()
+
+
+class TweetEvalIronyDataset(Dataset):
+    train_sep = "\n\n"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'irony')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalIronyTemplate}[template_version]()
+
+
+class AmazonPolarityDataset(Dataset):
+    train_sep = "\n\n"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('mteb/amazon_polarity')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: AmazonPolarityTemplate}[template_version]()
+
+
+class PoemSentimentDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('google-research-datasets/poem_sentiment')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["id"], data=example, correct_candidate=label, candidates=[0, 1, 2, 3])
+
+    def get_template(self, template_version=0):
+        return {0: PoemSentimentTemplate}[template_version]()
+
+
+class YelpReviewPolarityDataset(Dataset):
+    train_sep = "\n\n"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('fancyzhx/yelp_polarity')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: YelpReviewPolarityTemplate}[template_version]()
+
+
+class FinancialPhrasebankDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('yzhuang/financial_phrasebank')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"][:-1].strip()
+        return Sample(id=None, data=example, correct_candidate=label, candidates=["positive", "negative", "neutral"])
+
+    def get_template(self, template_version=0):
+        return {0: FinancialPhrasebankTemplate}[template_version]()
+
+
+class EmoDataset(Dataset):
+    train_sep = "\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('aladar/emo')
+        train_d = d["train"]
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3])
+
+    def get_template(self, template_version=0):
+        return {0: EmoTemplate}[template_version]()
+
+
+class GLUERTEDataset(Dataset):
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('glue', 'rte')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: GLUERTETemplate}[template_version]()
+
+
+class GLUEMRPCDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('glue', 'mrpc')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: GLUEMRPCTemplate}[template_version]()
+
+
+class GLUEQQPDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('glue', 'qqp')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: GLUEQQPTemplate}[template_version]()
+
+
+class GLUEMNLIDataset(Dataset):
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('glue', 'mnli')
+        train_d = d["train"]
+        validation_d = d["validation_matched"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: GLUEMNLITemplate}[template_version]()
+
+
+class SciTailDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('allenai/scitail', 'dgem_format')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=["neutral", "entails"])
+
+    def get_template(self, template_version=0):
+        return {0: SciTailTemplate}[template_version]()
+
+
+class GLUEWNLIDataset(Dataset):
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('glue', 'wnli')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: GLUEWNLITemplate}[template_version]()
+
+
+class SICKDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('sick')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=example["id"], data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: SICKTemplate}[template_version]()
+
+
+class ANLIDataset(Dataset):
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('anli')
+        train_d = d["train_r1"]
+        validation_d = d["dev_r1"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: ANLITemplate}[template_version]()
+
+
+class MedicalQuestionsPairsDataset(Dataset):
+    def __init__(self, subtask=None, **kwargs) -> None:
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('curaihealth/medical_questions_pairs')
+
+        train_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i < 2000]
+        valid_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i > 2000]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: MedicalQuestionsPairsTemplate}[template_version]()

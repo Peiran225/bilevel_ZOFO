@@ -124,7 +124,7 @@ class OurArguments(TrainingArguments):
     # Auto saving when interrupted
     save_on_interrupt: bool = False  # save model when interrupted (useful for long training)
 
-    clean_model_at_end: bool = True  # remove everthing at the end.
+    clean_model_at_end: bool = True  # remove everything at the end.
 
     # sparse gradient pruning
     gradient_sparsity: float = None
@@ -296,6 +296,8 @@ def main():
                 for i, task in enumerate(args.training_tasks):
                     num_dev = args.num_dev[i]
                     if num_dev is not None:
+                        if num_dev > len(tasks_train_samples[i]):
+                            num_dev = len(tasks_train_samples[i]) // 3
                         dev_samples = tasks_train_samples[i][-num_dev:]
                         tasks_train_samples[i] = tasks_train_samples[i][:-num_dev]
                         logger.info(f"Task {task} has {len(tasks_train_samples[i])} training samples "

@@ -3,6 +3,7 @@ import collections
 import re
 import string
 from collections import Counter
+from sklearn.metrics import f1_score
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles and extra whitespace."""
@@ -29,6 +30,12 @@ def calculate_metric(predictions, metric_name):
             return np.mean([pred.predicted_candidate in pred.correct_candidate for pred in predictions])
         else:
             return np.mean([pred.correct_candidate == pred.predicted_candidate for pred in predictions])
+    if metric_name == "clf_f1":
+        if isinstance(predictions[0].correct_candidate, list):
+            return f1_score([pred.correct_candidate[0] for pred in predictions], [pred.predicted_candidate for pred in predictions], average="macro")
+        else:
+            return f1_score([pred.correct_candidate for pred in predictions], [pred.predicted_candidate for pred in predictions], average="macro")
+
     elif metric_name == "em":
         # For question answering
         return np.mean([any([normalize_answer(ans) == normalize_answer(pred.predicted_candidate) for ans in pred.correct_candidate]) for pred in predictions])

@@ -1,4 +1,4 @@
-name: bilevel2_adam_cls_prompt
+name: bilevel2_adam_cls_prompt_DROP_opt-1.3b
 project: zo_bench
 command:
 - ${interpreter}
@@ -8,8 +8,8 @@ command:
 - "--num_virtual_tokens=10"
 - "--prompt_init_by_real_tokens"
 - "--model_name=facebook/opt-1.3b"
-- "--training_tasks=SST2"
-- "--test_tasks=SST2"
+- "--training_tasks=DROP"
+- "--test_tasks=DROP"
 - "--output_dir=/beacon-scratch/rezashkv/research/results/zofo-bilevel"
 - "--num_train_epochs=1000"
 - "--per_device_train_batch_size=16"
@@ -22,7 +22,6 @@ command:
 - "--num_eval=1000"
 - "--num_train=1000"
 - "--num_dev=500"
-- "--train_as_classification"
 - "--perturbation_mode=two_side"
 - "--trainer=bilevel_minimax2"
 - "--optimizer=adam"
@@ -36,20 +35,18 @@ command:
 - "--upper_optimizer=adam"
 - "--upper_momentum=0.0"
 - "--zo_eps=1e-3"
+- "--upper_learning_rate=1e-3"
+- "--lower_level_num_train_steps=20"
 method: grid
 metric:
   goal: maximize
   name: test_acc
 parameters:
-  upper_learning_rate: 
+  seed:
     values:
-      - 1e-4
-      - 1e-6
-      - 1e-8
-  lower_level_num_train_steps:
-    values:
-      - 10
-      - 50
+      - 0
+      - 43
+      - 100
   
 
 program: run_bilevel.py

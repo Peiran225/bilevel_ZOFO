@@ -1,0 +1,53 @@
+name: bilevel2_adam_cls_prompt_WinoGrande_opt-1.3b
+project: zo_bench
+command:
+- ${interpreter}
+- ${program}
+- ${args}
+- "--prompt_tuning"
+- "--num_virtual_tokens=10"
+- "--prompt_init_by_real_tokens"
+- "--model_name=facebook/opt-1.3b"
+- "--training_tasks=WinoGrande"
+- "--test_tasks=WinoGrande"
+- "--output_dir=/beacon-scratch/rezashkv/research/results/zofo-bilevel"
+- "--num_train_epochs=1000"
+- "--per_device_train_batch_size=16"
+- "--load_best_model_at_end"
+- "--evaluation_strategy=steps"
+- "--save_strategy=steps"
+- "--save_total_limit=1"
+- "--max_steps=5000"
+- "--logging_steps=10"
+- "--num_eval=1000"
+- "--num_train=1000"
+- "--num_dev=500"
+- "--train_as_classification"
+- "--perturbation_mode=two_side"
+- "--trainer=bilevel_minimax2"
+- "--optimizer=adam"
+- "--train_set_seed=0"
+- "--lr_scheduler_type=constant"
+- "--eval_steps=500"
+- "--save_steps=500"
+- "--weight_decay=0"
+- "--Lambda=1e4"
+- "--learning_rate=1e-4"
+- "--upper_optimizer=adam"
+- "--upper_momentum=0.0"
+- "--zo_eps=1e-3"
+- "--upper_learning_rate=1e-3"
+- "--lower_level_num_train_steps=20"
+method: grid
+metric:
+  goal: maximize
+  name: test_acc
+parameters:
+  seed:
+    values:
+      - 0
+      - 43
+      - 100
+  
+
+program: run_bilevel.py
