@@ -5,6 +5,7 @@ from typing import List, Union
 
 import numpy as np
 from datasets import load_dataset
+from torch.utils.data import ConcatDataset
 
 from .templates import *
 from ..utils import temp_seed
@@ -35,10 +36,10 @@ def get_tasks(task_names):
 
 @dataclass
 class Sample:
-    id: int = None
+    id: Union[int, None] = None
     data: dict = None
-    correct_candidate: Union[str, List[str]] = None
-    candidates: List[str] = None
+    correct_candidate: Union[str, int, List[str], List[int]] = None
+    candidates: Union[str, int, List[str], List[int], None] = None
 
 
 class Dataset:
@@ -120,6 +121,7 @@ class SST2Dataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -146,6 +148,7 @@ class CopaDataset(Dataset):
     mixed_set = False
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -174,6 +177,7 @@ class CopaDataset(Dataset):
 
 class BoolQDataset(Dataset):
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -202,6 +206,7 @@ class BoolQDataset(Dataset):
 class MultiRCDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -230,6 +235,7 @@ class MultiRCDataset(Dataset):
 class CBDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -258,6 +264,7 @@ class CBDataset(Dataset):
 class WICDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -286,6 +293,7 @@ class WICDataset(Dataset):
 class WSCDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -314,6 +322,7 @@ class WSCDataset(Dataset):
 class ReCoRDDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -342,6 +351,7 @@ class ReCoRDDataset(Dataset):
 class RTEDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -372,10 +382,11 @@ class SQuADDataset(Dataset):
     metric_name = "f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset()
 
-    def load_dataset(self):
-        dataset = load_dataset("squad")
+    def load_dataset(self, **kwargs):
+        dataset = load_dataset("squad", **kwargs)
         train_examples = dataset["train"]
         valid_examples = dataset["validation"]
 
@@ -408,9 +419,10 @@ class DROPDataset(Dataset):
     generation = True
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset()
 
-    def load_dataset(self):
+    def load_dataset(self, **kwargs):
         dataset = load_dataset("drop")
         train_examples = dataset["train"]
         valid_examples = dataset["validation"]
@@ -444,8 +456,8 @@ class WinoGrandeDataset(Dataset):
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
-        train_set = load_dataset('winogrande', 'winogrande_m', split='train')
-        valid_set = load_dataset('winogrande', 'winogrande_m', split='validation')
+        train_set = load_dataset('winogrande', 'winogrande_m', split='train', **kwargs)
+        valid_set = load_dataset('winogrande', 'winogrande_m', split='validation', **kwargs)
 
         train_samples = [self.build_sample(example) for example in train_set]
         valid_samples = [self.build_sample(example) for example in valid_set]
@@ -476,6 +488,7 @@ class TweetEvalSentimentDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -500,6 +513,7 @@ class IMDBDataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -524,6 +538,7 @@ class RottenTomatoesDataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -549,6 +564,7 @@ class EmotionDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -574,6 +590,7 @@ class TweetEvalEmotionDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -598,6 +615,7 @@ class TweetEvalIronyDataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -622,6 +640,7 @@ class AmazonPolarityDataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -647,6 +666,7 @@ class PoemSentimentDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -671,6 +691,7 @@ class YelpReviewPolarityDataset(Dataset):
     train_sep = "\n\n"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -696,6 +717,7 @@ class FinancialPhrasebankDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -721,6 +743,7 @@ class EmoDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -744,6 +767,7 @@ class EmoDataset(Dataset):
 class GLUERTEDataset(Dataset):
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -758,7 +782,7 @@ class GLUERTEDataset(Dataset):
 
     def build_sample(self, example):
         label = example["label"]
-        return Sample(id=example["idx"], data=example, correct_candidate=label, candidates=[0, 1])
+        return Sample(data=example, correct_candidate=label, candidates=[0, 1])
 
     def get_template(self, template_version=0):
         return {0: GLUERTETemplate}[template_version]()
@@ -768,6 +792,7 @@ class GLUEMRPCDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -792,6 +817,7 @@ class GLUEQQPDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -814,6 +840,7 @@ class GLUEQQPDataset(Dataset):
 
 class GLUEMNLIDataset(Dataset):
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -838,6 +865,7 @@ class SciTailDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -860,6 +888,7 @@ class SciTailDataset(Dataset):
 
 class GLUEWNLIDataset(Dataset):
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -884,6 +913,7 @@ class SICKDataset(Dataset):
     metric_name = "clf_f1"
 
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -906,6 +936,7 @@ class SICKDataset(Dataset):
 
 class ANLIDataset(Dataset):
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -928,6 +959,7 @@ class ANLIDataset(Dataset):
 
 class MedicalQuestionsPairsDataset(Dataset):
     def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
         self.load_dataset(subtask, **kwargs)
 
     def load_dataset(self, path, **kwargs):
@@ -944,3 +976,347 @@ class MedicalQuestionsPairsDataset(Dataset):
 
     def get_template(self, template_version=0):
         return {0: MedicalQuestionsPairsTemplate}[template_version]()
+
+
+class HatexplainDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('NochnoyRitzar/hatexplain_cleaned')
+
+        train_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i < 8000]
+        valid_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i > 5000]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["major_label"]
+        label = 1 if "Hate" in label else 0
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: HatexplainTemplate}[template_version]()
+
+
+class HateSpeechOffensiveDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tdavidson/hate_speech_offensive')
+
+        train_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i < 10000]
+        valid_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i > 10000]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["class"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: HateSpeechOffensiveTemplate}[template_version]()
+
+
+class TweetEvalOffensiveDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'offensive')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalOffensiveTemplate}[template_version]()
+
+
+class EthosDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('ethos', 'binary')
+
+        train_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i < 800]
+        valid_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i > 800]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: EthosTemplate}[template_version]()
+
+
+class TweetEvalHateDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'hate')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalHateTemplate}[template_version]()
+
+
+class HateSpeech18Dataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('SetFit/hate_speech18')
+
+        train_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i < 9000]
+        valid_samples = [self.build_sample(example) for i, example in enumerate(d["train"]) if i > 9000]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3])
+
+    def get_template(self, template_version=0):
+        return {0: HateSpeech18Template}[template_version]()
+
+class KiltFeverDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('kilt_tasks', 'fever')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = 1 if example["output"][0]["answer"] == "SUPPORTS" else 0
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: KiltFeverTemplate}[template_version]()
+
+
+class LiarDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('chengxuphd/liar2')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3, 4, 5])
+
+    def get_template(self, template_version=0):
+        return {0: LiarTemplate, 1: LiarTemplateJustified}[template_version]()
+
+
+class HealthFactsDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('ImperialCollegeLondon/health_fact')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        # true, false, unproven, mixed
+        label = 0 if example["label"] == "false" else 1 if example["label"] == "true" else 2 if example[
+                                                                                                    "label"] == "unproven" else 3
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2, 3])
+
+    def get_template(self, template_version=0):
+        return {0: HealthFactsTemplate, 1: HealthFactsEvidenceTemplate}[template_version]()
+
+
+class ClimateFeverDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('amandakonet/climate_fever_adopted')
+        train_d = d["train"]
+        validation_d = d["valid"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = 0 if example["label"] == "entailment" else 1 if example["label"] == "neutral" else 2
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: ClimateFeverTemplate, 1: ClimateFeverEvidenceTemplate}[template_version]()
+
+
+class TabFactDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tab_fact', 'tab_fact')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: TabFactTemplate}[template_version]()
+
+
+class TweetEvalStanceFeminismDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'stance_feminist')
+        train_d = ConcatDataset([d["train"], d["validation"]])
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalStanceFeminismTemplate}[template_version]()
+
+
+class TweetEvalStanceAtheismDataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('tweet_eval', 'stance_atheism')
+        train_d = ConcatDataset([d["train"], d["validation"]])
+        validation_d = d["test"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1, 2])
+
+    def get_template(self, template_version=0):
+        return {0: TweetEvalStanceAtheismTemplate}[template_version]()
+
+
+class WikiQADataset(Dataset):
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        d = load_dataset('wiki_qa')
+        train_d = d["train"]
+        validation_d = d["validation"]
+
+        train_samples = [self.build_sample(example) for example in train_d]
+        valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_samples, "valid": valid_samples}
+
+    def build_sample(self, example):
+        label = example["label"]
+        return Sample(id=None, data=example, correct_candidate=label, candidates=[0, 1])
+
+    def get_template(self, template_version=0):
+        return {0: WikiQATemplate}[template_version]()

@@ -756,14 +756,14 @@ class GLUERTETemplate(Template):
     verbalizer = {0: "Yes", 1: "No"}
 
     def encode(self, sample):
-        premise = sample.data["sentence1"]
-        hypothesis = sample.data["sentence2"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes or No?"
+        premise = sample.data['sentence1']
+        hypothesis = sample.data['sentence2']
+        return f"{premise}\nDoes this mean that \"{hypothesis}\" is true? Yes or No?\n"
 
     def verbalize(self, sample, candidate):
-        premise = sample.data["sentence1"]
-        hypothesis = sample.data["sentence2"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? {self.verbalizer[candidate]}"
+        premise = sample.data['sentence1']
+        hypothesis = sample.data['sentence2']
+        return f"{premise}\nDoes this mean that \"{hypothesis}\" is true? Yes or No?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -778,12 +778,12 @@ class GLUEMRPCTemplate(Template):
     def encode(self, sample):
         sentence1 = sample.data["sentence1"]
         sentence2 = sample.data["sentence2"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences paraphrases of each other? Yes or No?"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences paraphrases of each other? Yes or No?\n"
 
     def verbalize(self, sample, candidate):
         sentence1 = sample.data["sentence1"]
         sentence2 = sample.data["sentence2"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences paraphrases of each other? {self.verbalizer[candidate]}"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences paraphrases of each other? Yes or No?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -798,12 +798,12 @@ class GLUEQQPTemplate(Template):
     def encode(self, sample):
         question1 = sample.data["question1"]
         question2 = sample.data["question2"]
-        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions duplicates of each other? Yes or No?"
+        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions duplicates of each other? Yes or No?\n"
 
     def verbalize(self, sample, candidate):
         question1 = sample.data["question1"]
         question2 = sample.data["question2"]
-        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions duplicates of each other? {self.verbalizer[candidate]}"
+        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions duplicates of each other? Yes or No?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -818,12 +818,12 @@ class GLUEMNLITemplate(Template):
     def encode(self, sample):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n"
 
     def verbalize(self, sample, candidate):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? {self.verbalizer[candidate]}"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -837,12 +837,12 @@ class SciTailTemplate(Template):
     def encode(self, sample):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n"
 
     def verbalize(self, sample, candidate):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? {candidate}"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n {candidate}"
 
     def encode_sfc(self, sample):
         return f""
@@ -857,12 +857,12 @@ class GLUEWNLITemplate(Template):
     def encode(self, sample):
         sentence1 = sample.data["sentence1"]
         sentence2 = sample.data["sentence2"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailed by each other? Yes or No?"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailed by each other? Yes or No?\n"
 
     def verbalize(self, sample, candidate):
         sentence1 = sample.data["sentence1"]
         sentence2 = sample.data["sentence2"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailed by each other? {self.verbalizer[candidate]}"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailed by each other? Yes or No?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -872,17 +872,17 @@ class GLUEWNLITemplate(Template):
 
 
 class SICKTemplate(Template):
-    verbalizer = {0: "entailment", 1: "contradiction", 2: "neutral"}
+    verbalizer = {0: "entailment", 1: "neutral", 2: "contradiction"}
 
     def encode(self, sample):
         sentence1 = sample.data["sentence_A"]
         sentence2 = sample.data["sentence_B"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailment, contradiction, or neutral?"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailment, contradiction, or neutral?\n"
 
     def verbalize(self, sample, candidate):
         sentence1 = sample.data["sentence_A"]
         sentence2 = sample.data["sentence_B"]
-        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailment, contradiction, or neutral? {self.verbalizer[candidate]}"
+        return f"Sentence 1: {sentence1}\nSentence 2: {sentence2}\nAre these sentences entailment, contradiction, or neutral?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""
@@ -892,17 +892,17 @@ class SICKTemplate(Template):
 
 
 class ANLITemplate(Template):
-    verbalizer = {0: "yes", 1: "no", 2: "maybe"}
+    verbalizer = {0: "Yes", 1: "Maybe", 2: "No"}
 
     def encode(self, sample):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n"
 
     def verbalize(self, sample, candidate):
         premise = sample.data["premise"]
         hypothesis = sample.data["hypothesis"]
-        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? {self.verbalizer[candidate]}"
+        return f"Premise: {premise}\nHypothesis: {hypothesis}\nDoes the premise entail the hypothesis? Yes, No, or Maybe?\n {candidate}"
 
     def encode_sfc(self, sample):
         return f""
@@ -912,17 +912,334 @@ class ANLITemplate(Template):
 
 
 class MedicalQuestionsPairsTemplate(Template):
-    verbalizer = {1: "yes", 0: "no"}
+    verbalizer = {1: "Yes", 0: "No"}
 
     def encode(self, sample):
         question1 = sample.data["question_1"]
         question2 = sample.data["question_2"]
-        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions similar to each other? Yes or No?"
+        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions similar to each other? Yes or No?\n"
 
     def verbalize(self, sample, candidate):
         question1 = sample.data["question_1"]
         question2 = sample.data["question_2"]
-        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions similar to each other? {self.verbalizer[candidate]}"
+        return f"Question 1: {question1}\nQuestion 2: {question2}\nAre these questions similar to each other? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class HatexplainTemplate(Template):
+    verbalizer = {0: "Yes", 1: "No"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text} Does the text contain hate speech? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\n Does the text contain hate speech? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class HateSpeechOffensiveTemplate(Template):
+    verbalizer = {0: "hate speech", 1: "offensive", 2: "neither"}
+
+    def encode(self, sample):
+        text = sample.data["tweet"]
+        return f"{text}\nIs the text hate speech, offensive, or neither?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["tweet"]
+        return f"{text}\nIs the text hate speech, offensive, or neither?\n {self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class TweetEvalOffensiveTemplate(Template):
+    verbalizer = {0: "No", 1: "Yes"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\n Is the text offensive? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\n Is the text offensive? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class EthosTemplate(Template):
+    verbalizer = {0: "No", 1: "Yes"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\nIs the text offensive? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\nIs the text offensive? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class TweetEvalHateTemplate(Template):
+    verbalizer = {0: "No", 1: "Yes"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\n Is the text hate speech? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\n Is the text hate speech? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class HateSpeech18Template(Template):
+    verbalizer = {0: "No", 1: "Yes", 2: "skip", 3: "depends"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\nIs the text hate speech? Yes, No, Skip, or Depends?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\nIs the text hate speech? Yes, No, Skip, or Depends?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class KiltFeverTemplate(Template):
+    verbalizer = {0: "No", 1: "Yes"}
+
+    def encode(self, sample):
+        text = sample.data["input"]
+        return f"{text}\nIs the claim true? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["input"]
+        return f"{text}\nIs the claim true? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class LiarTemplate(Template):
+    verbalizer = {0: "Pants-on-Fire", 1: "False", 2: "Barely-True", 3: "Half-True", 4: "Mostly-True", 5: "True"}
+
+    def encode(self, sample):
+        text = sample.data["statement"]
+        return f"{text}\nWhat is the label for this claim? Pants-on-Fire, False, Barely-True, Half-True, Mostly-True, or True?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["statement"]
+        return f"{text}\nWhat is the label for this claim? Pants-on-Fire, False, Barely-True, Half-True, Mostly-True, or True?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class LiarTemplateJustified(Template):
+    verbalizer = {0: "Pants-on-Fire", 1: "False", 2: "Barely-True", 3: "Half-True", 4: "Mostly-True", 5: "True"}
+
+    def encode(self, sample):
+        text = sample.data["statement"]
+        justification = sample.data["justification"]
+        return f"Claim: {text}\nJustification: {justification}\nWhat is the label for this claim? Pants-on-Fire, False, Barely-True, Half-True, Mostly-True, or True?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["statement"]
+        justification = sample.data["justification"]
+        return f"Claim: {text}\nJustification: {justification}\nWhat is the label for this claim? Pants-on-Fire, False, Barely-True, Half-True, Mostly-True, or True?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+
+class HealthFactsTemplate(Template):
+    verbalizer = {0: "False", 1: "True", 2: "Unverified", 3: "Mixture"}
+
+    def encode(self, sample):
+        text = sample.data["claim"]
+        return f"{text}\nWhat is the label for this claim? False, True, Unverified, or Mixture?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["claim"]
+        return f"{text}\nWhat is the label for this claim? False, True, Unverified, or Mixture?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class HealthFactsEvidenceTemplate(Template):
+    verbalizer = {0: "False", 1: "True", 2: "Unverified", 3: "Mixture"}
+
+    def encode(self, sample):
+        text = sample.data["claim"]
+        explanation = sample.data["explanation"]
+        return f"Claim: {text}\nExplanation: {explanation}\nWhat is the label for this claim? False, True, Unverified, or Mixture?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["claim"]
+        explanation = sample.data["explanation"]
+        return f"Claim: {text}\nExplanation: {explanation}\nWhat is the label for this claim? False, True, Unverified, or Mixture?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class ClimateFeverTemplate(Template):
+    verbalizer = {0: "entailment", 1: "neutral", 2: "contradiction"}
+
+    def encode(self, sample):
+        text = sample.data["claim"]
+        return f"{text}\nWhat is the label for this claim? entailment, neutral, or contradiction?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["claim"]
+        return f"{text}\nWhat is the label for this claim? entailment, neutral, or contradiction?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class ClimateFeverEvidenceTemplate(Template):
+    verbalizer = {0: "entailment", 1: "neutral", 2: "contradiction"}
+
+    def encode(self, sample):
+        text = sample.data["claim"]
+        explanation = sample.data["evidence"]
+        return f"Claim: {text}\nEvidence: {explanation}\nWhat is the label for this claim? entailment, neutral, or contradiction?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["claim"]
+        explanation = sample.data["evidence"]
+        return f"Claim: {text}\nEvidence: {explanation}\nWhat is the label for this claim? entailment, neutral, or contradiction?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class TabFactTemplate(Template):
+    verbalizer = {0: "Yes", 1: "No"}
+
+    def encode(self, sample):
+        text = sample.data["statement"]
+        evidence = sample.data["table_text"]
+        return f"Claim: {text}\nEvidence: {evidence}\nIs the claim true? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["statement"]
+        evidence = sample.data["table_text"]
+        return f"Claim: {text}\nEvidence: {evidence}\nIs the claim true? Yes or No?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class TweetEvalStanceFeminismTemplate(Template):
+    verbalizer = {0: "neutral", 1: "against", 2: "favor"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\nWhat is the stance of the tweet towards feminism? neutral, against, or favor?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\nWhat is the stance of the tweet towards feminism? neutral, against, or favor?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class TweetEvalStanceAtheismTemplate(Template):
+    verbalizer = {0: "neutral", 1: "against", 2: "favor"}
+
+    def encode(self, sample):
+        text = sample.data["text"]
+        return f"{text}\nWhat is the stance of the tweet towards atheism? neutral, against, or favor?\n"
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["text"]
+        return f"{text}\nWhat is the stance of the tweet towards atheism? neutral, against, or favor?\n{self.verbalizer[candidate]}"
+
+    def encode_sfc(self, sample):
+        return f""
+
+    def verbalize_sfc(self, sample, candidate):
+        return f"{self.verbalizer[candidate]}"
+
+
+class WikiQATemplate(Template):
+    verbalizer = {0: "Yes", 1: "No"}
+
+    def encode(self, sample):
+        question = sample.data["question"]
+        answer = sample.data["answer"]
+        return f"Question: {question}\nAnswer: {answer}\nIs the answer correct? Yes or No?\n"
+
+    def verbalize(self, sample, candidate):
+        question = sample.data["question"]
+        answer = sample.data["answer"]
+        return f"Question: {question}\nAnswer: {answer}\nIs the answer correct? Yes or No?\n{self.verbalizer[candidate]}"
 
     def encode_sfc(self, sample):
         return f""

@@ -120,6 +120,7 @@ class ZOLLMTrainer(Trainer):
         self.evaluate_func = evaluate_func
         self.dev_samples = dev_samples
         self.eval_samples = eval_samples
+        self.do_grad_scaling = False
 
     def _inner_training_loop(
             self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
@@ -526,8 +527,8 @@ class ZOLLMTrainer(Trainer):
                 if self.args.eval_steps is not None and (total_steps + 1) % self.args.eval_steps == 0:
                     print(
                         f"=========================> Evaluating at step {total_steps + 1}... <=========================")
-                    val_metrics = self.evaluate_func([], self.dev_samples)
-                    test_metrics = self.evaluate_func([], self.eval_samples)
+                    val_metrics = self.evaluate_func(None, [], self.dev_samples)
+                    test_metrics = self.evaluate_func(None, [], self.eval_samples)
                     if "accuracy" in test_metrics:
                         self.log({"test_acc": test_metrics["accuracy"], "val_acc": val_metrics["accuracy"]})
                         wandb.log({"test_acc": test_metrics["accuracy"], "val_acc": val_metrics["accuracy"]})

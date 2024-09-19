@@ -8,10 +8,12 @@ from transformers import (
 from bilevel_zofo.data.tasks import get_tasks
 from bilevel_zofo.utils import *
 from bilevel_zofo.framework import Framework
+from bilevel_zofo.peft.lora import LoRA
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
 
 @dataclass
 class OurArguments(TrainingArguments):
@@ -41,6 +43,7 @@ class OurArguments(TrainingArguments):
     load_int8: bool = False  # load model parameters as int8
     max_length: int = 2048  # max length the model can take
     no_auto_device: bool = False  # do not load model by auto device; should turn this on when using FSDP
+    save_only_model = True
 
     # Calibration
     sfc: bool = False  # whether to use SFC calibration
@@ -161,6 +164,14 @@ class OurArguments(TrainingArguments):
     upper_learning_rate: float = 1e-9
     upper_momentum: float = 0.0
 
+    # final fewshot-lora tuning
+    multitask_zero_shot: bool = True  # whether to do multitask zero-shot tuning
+    few_shot_lora_r: int = 16
+    few_shot_lora_alpha: int = 16
+    few_shot_lora_num_samples: int = 5
+    few_shot_lora_num_epochs: int = 1
+    few_shot_lora_learning_rate: float = 2e-4
+
 
 def parse_args():
     # parser = argparse.ArgumentParser()
@@ -205,12 +216,7 @@ def main():
     if "bilevel_minimax" in args.trainer:
         args.tag = (f"{args.trainer}-train:{args.training_tasks}-test:{args.test_tasks}-{args.template_ver}"
                     f"-{args.model_name.split('/')[-1]}"
-                    f"-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
-                    f"-LR{args.learning_rate}-{args.lr_scheduler_type}"
-                    f"-ZOEPS{args.zo_eps}-Q{args.q}"
-                    f"-LowerSTEPS{args.lower_level_num_train_steps}"
-                    f"-UpperLr{args.upper_learning_rate}"
-                    f"-Lambda{args.Lambda}")
+                    f"-OPTIM_{args.mode}")
     else:
         args.tag = (f"{args.trainer}-train:{args.training_tasks}-test:{args.test_tasks}-{args.template_ver}"
                     f"-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
@@ -227,7 +233,7 @@ def main():
     args.logging_dir = os.path.join(args.output_dir, "logs")
     os.makedirs(args.logging_dir, exist_ok=True)
 
-    wandb.init(project="zo_bench", name=args.tag, config=vars(args), dir=args.output_dir)
+    w = wandb.init(project="zo_bench", name=args.tag, config=vars(args), dir=args.output_dir)
 
     set_seed(args.seed)
     training_tasks = get_tasks(args.training_tasks)
@@ -281,17 +287,16 @@ def main():
         for train_set_id, tasks_train_samples in enumerate(train_sets):
             train_set_seed = train_set_id if args.train_set_seed is None else args.train_set_seed
 
-            tasks_eval_samples = []
+            test_tasks_eval_samples = []
             for i, task in enumerate(test_tasks):
                 num_eval = args.num_eval[i]
                 if num_eval is not None:
                     eval_samples = task.sample_subset(data_split="valid", seed=train_set_seed, num=num_eval)
                 else:
                     eval_samples = task.valid_samples
-                tasks_eval_samples.append(eval_samples)
+                test_tasks_eval_samples.append(eval_samples)
 
             tasks_dev_samples = []
-            tasks_validate_samples = []
             if args.trainer != "none":
                 for i, task in enumerate(args.training_tasks):
                     num_dev = args.num_dev[i]
@@ -309,41 +314,77 @@ def main():
                     tasks_dev_samples.append(dev_samples)
 
                 args.tasks_dev_samples = tasks_dev_samples
-                args.tasks_eval_samples = tasks_eval_samples
+                args.tasks_eval_samples = test_tasks_eval_samples
 
                 # Training
                 framework.train(tasks_train_samples,
-                                tasks_dev_samples if len(tasks_dev_samples) > 0 else tasks_eval_samples,
-                                tasks_eval_samples)
+                                tasks_dev_samples if len(tasks_dev_samples) > 0 else [],
+                                test_tasks_eval_samples)
                 tasks_metrics = []
                 if not args.no_eval:  # This is True
-                    tasks_metrics = [framework.evaluate(training_tasks[i], [], tasks_eval_samples[i],
-                                                        description="Evaluating on the Test Set")
-                                     for i in range(len(training_tasks))]
-                    for i, task in enumerate(args.training_tasks):
-                        metrics = tasks_metrics[i]
-                        metrics["task"] = task
-                        _keys = list(metrics.keys())
-                        for m in _keys:
-                            metrics["test_" + m] = metrics[m]
-                        if tasks_dev_samples is not None:
-                            dev_metrics = framework.evaluate(framework.training_tasks[i],
-                                                             [], tasks_dev_samples[i],
-                                                             description="Evaluating on the Validation Set"
-                                                             )
-                            _keys = list(dev_metrics.keys())
+                    if args.multitask_zero_shot:
+                        tasks_metrics = [framework.evaluate(training_tasks[i], [], test_tasks_eval_samples[i],
+                                                            description="Evaluating on the Test Set")
+                                         for i in range(len(training_tasks))]
+                        for i, task in enumerate(args.training_tasks):
+                            metrics = tasks_metrics[i]
+                            metrics["task"] = task
+                            _keys = list(metrics.keys())
                             for m in _keys:
-                                metrics["val_" + m] = dev_metrics[m]
+                                metrics["test_" + m] = metrics[m]
+                    else:
+                        w.finish()
+                        # Few-shot LoRA tuning on the test tasks
+                        args.trainer = "regular"
+                        args.mode = "lora"
+                        args.lora_alpha = args.few_shot_lora_alpha
+                        args.lora_r = args.few_shot_lora_r
+                        args.learning_rate = args.few_shot_lora_learning_rate
+                        args.num_train_epochs = args.few_shot_lora_num_epochs
+                        args.resume_from_checkpoint = None
+                        args.overwrite_output_dir = True
+                        args.max_steps = 0
+                        args.optimizer = "adamw"
+                        args.lr_scheduler_type = "constant"
+                        args.save_model = True
+                        args.save_strategy = "epoch"
+                        args.evaluation_strategy = "epoch"
+                        args.train_as_classification = False
+                        args.eval_steps = None
+
+                        framework.model = framework.lora.remove_loras(framework.model)
+                        framework.args = args
+
+                        for i, task in enumerate(test_tasks):
+                            framework.training_tasks = [task]
+                            framework.test_tasks = [task]
+                            LoRA(framework.model, r=args.lora_r, alpha=args.lora_alpha, float16=args.load_float16,
+                                 tasks=[task])
+                            test_task_training_samples = [task.sample_subset(data_split="train", seed=train_set_seed,
+                                                                            num=args.few_shot_lora_num_samples)]
+
+                            wandb.init(project="zo_bench", name=f"test_set_few_shot_lora{args.tag}", config=vars(args),
+                                       dir=args.output_dir)
+
+                            framework.train(test_task_training_samples, test_task_training_samples,
+                                            [test_tasks_eval_samples[i]])
+                            test_task_metrics = framework.evaluate(task, [], test_tasks_eval_samples[i],
+                                                                   description="Final Evaluation on the Test Set")
+                            test_task_metrics["task"] = str(task)
+
+                            tasks_metrics.append(test_task_metrics)
+
             else:
                 assert args.num_dev is None
                 # Zero-shot / in-context learning
                 tasks_metrics = []
                 for i, task in enumerate(framework.training_tasks):
-                    tasks_metrics.append(framework.evaluate(task, tasks_train_samples[i], tasks_eval_samples[i]))
+                    tasks_metrics.append(framework.evaluate(task, tasks_train_samples[i], test_tasks_eval_samples[i]))
             for task_metrics in tasks_metrics:
                 logger.info(task_metrics)
-                wandb.log(task_metrics)
-
+                for key in task_metrics:
+                    if key != "task":
+                        wandb.log({f"{task_metrics['task']}_{key}": task_metrics[key]})
             if not args.no_eval:
                 logger.info("===== Train set %d =====" % train_set_seed)
                 for i, task_metrics in enumerate(tasks_metrics):
@@ -361,16 +402,16 @@ def main():
         # This is for in-context learning (ICL)
         assert args.trainer == "none"
 
-        tasks_eval_samples = []
+        test_tasks_eval_samples = []
         for i, task in enumerate(training_tasks):
             num_eval = args.num_eval[i]
             if num_eval is not None:
                 eval_samples = task.sample_subset(data_split="valid", seed=0, num=num_eval)
             else:
                 eval_samples = task.valid_samples
-            tasks_eval_samples.append(eval_samples)
+            test_tasks_eval_samples.append(eval_samples)
 
-        tasks_metrics = [framework.evaluate(framework.training_tasks[i], train_sets[i], tasks_eval_samples[i],
+        tasks_metrics = [framework.evaluate(framework.training_tasks[i], train_sets[i], test_tasks_eval_samples[i],
                                             one_train_set_per_eval_sample=True) for i in range(len(training_tasks))]
         for i, task_metrics in enumerate(tasks_metrics):
             logger.info(task_metrics)

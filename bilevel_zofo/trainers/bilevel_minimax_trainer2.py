@@ -17,13 +17,15 @@ The Trainer class, to easily train a 🤗 Transformers from scratch or finetune 
 """
 import copy
 import inspect
+
+import datasets
 import math
 import os
 import shutil
 import sys
 import time
 from functools import partial
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, List, Dict
 
 import numpy as np
 import torch
@@ -51,7 +53,7 @@ from transformers.trainer_callback import (
     TrainerState, ExportableState,
 )
 from transformers.trainer_pt_utils import (
-    get_model_param_count,
+    get_model_param_count, IterableDatasetShard,
 )
 from transformers.trainer_utils import (
     HPSearchBackend,
@@ -70,7 +72,7 @@ from transformers.utils import (
     logging, is_accelerate_available,
 )
 
-from datasets import Dataset as HFDataset
+from datasets import Dataset as HFDataset, Dataset
 
 import wandb
 from ..metrics import f1
@@ -555,6 +557,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                 total_batched_samples += 1
                 total_steps += 1
                 for task in batch:
+                    torch.cuda.empty_cache()
                     inputs = batch[task]
                     if self.args.lora:
                         self.set_active_lora(model, task)
@@ -698,7 +701,11 @@ class BiLevelMinimaxTrainer2(Trainer):
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
                     self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                    if self.args.mode == "lora":
+                        self.disable_lora(model)
                     self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+                    if self.args.mode == "lora":
+                        self.enable_lora(model)
 
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
@@ -783,7 +790,11 @@ class BiLevelMinimaxTrainer2(Trainer):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
+            if self.args.mode == "lora":
+                self.disable_lora(model)
             self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+            if self.args.mode == "lora":
+                self.enable_lora(model)
 
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_xla_available():
@@ -872,7 +883,6 @@ class BiLevelMinimaxTrainer2(Trainer):
 
         inputs_p = self._prepare_inputs(inputs_p)
         inputs_f = self._prepare_inputs(inputs_f)
-        grad_norm = None
 
         if is_sagemaker_mp_enabled():
             loss_mb = smp_forward_backward(model, inputs_p, self.args.gradient_accumulation_steps)
@@ -880,9 +890,6 @@ class BiLevelMinimaxTrainer2(Trainer):
 
         with self.compute_loss_context_manager():
             loss = self.compute_upper_loss(model_p, model, inputs_f, inputs_p)
-            print('evaluating the upper model_p')
-            self._maybe_log_save_evaluate(loss, grad_norm, model_p, trial, epoch, ignore_keys_for_eval)
-            print('finishing evaluating the upper model_p')
 
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -1662,3 +1669,16 @@ class BiLevelMinimaxTrainer2(Trainer):
         for name, param in model.named_parameters():
             if "lora" not in name or "prefix_" not in name or "prompt_encoder" not in name:
                 param.grad = None
+
+    @staticmethod
+    def disable_lora(model):
+        for module in model.modules():
+            if isinstance(module, MultiTaskLoRALinear):
+                module.original_merged = module.merged
+                module.merged = True
+
+    @staticmethod
+    def enable_lora(model):
+        for module in model.modules():
+            if isinstance(module, MultiTaskLoRALinear):
+                module.merged = module.original_merged

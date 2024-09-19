@@ -239,7 +239,6 @@ class LoRA:
         r, alpha: LoRA hyperparameters
         float16: Whether the model parameters are float16 or not
         """
-
         self.model = model
         self.hidden_dim = model.config.hidden_size
         self.float16 = float16
@@ -253,6 +252,7 @@ class LoRA:
         else:
             raise NotImplementedError
 
+        self.attention_name = attention_name
 
         # Insert LoRA
         for key, _ in model.named_modules():
@@ -368,3 +368,63 @@ class LoRA:
         for n, p in model.named_parameters():
             if "lora" not in n:
                 p.requires_grad = False
+
+    def remove_loras(self, model):
+
+        for key, _ in model.named_modules():
+            if key[-len(self.attention_name):] == self.attention_name:
+                logger.info(f"Removing lora from: {key}")
+                _, _, attn = find_module(model, key)
+
+                if model.config.model_type == "opt":
+                    original_q_weight = attn.q_proj.weight.data
+                    original_q_bias = attn.q_proj.bias.data
+                    original_v_weight = attn.v_proj.weight.data
+                    original_v_bias = attn.v_proj.bias.data
+                    attn.q_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=model.config.enable_bias).to(
+                        original_q_weight.device)
+                    attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=model.config.enable_bias).to(
+                        original_v_weight.device)
+                    if self.float16:
+                        attn.q_proj.half()
+                        attn.v_proj.half()
+                    attn.q_proj.weight.data = original_q_weight
+                    attn.q_proj.bias.data = original_q_bias
+                    attn.v_proj.weight.data = original_v_weight
+                    attn.v_proj.bias.data = original_v_bias
+                elif model.config.model_type == "llama":
+                    attention_bias = False if not hasattr(model.config,
+                                                          "attention_bias") else model.config.attention_bias
+                    original_q_weight = attn.q_proj.weight.data
+                    original_v_weight = attn.v_proj.weight.data
+                    original_q_bias = attn.q_proj.bias.data if attention_bias else None
+                    original_v_bias = attn.v_proj.bias.data if attention_bias else None
+                    attn.q_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=attention_bias).to(
+                        original_q_weight.device)
+                    attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=attention_bias).to(
+                        original_v_weight.device)
+                    if self.float16:
+                        attn.q_proj.half()
+                        attn.v_proj.half()
+                    attn.q_proj.weight.data = original_q_weight
+                    attn.v_proj.weight.data = original_v_weight
+                    if attention_bias:
+                        attn.q_proj.bias.data = original_q_bias
+                        attn.v_proj.bias.data = original_v_bias
+                elif model.config.model_type == "mistral":
+                    config = model.config
+                    original_q_weight = attn.q_proj.weight.data
+                    original_v_weight = attn.v_proj.weight.data
+                    head_dim = config.hidden_size // config.num_attention_heads
+                    attn.q_proj = nn.Linear(config.hidden_size, config.hidden_size).to(original_q_weight.device)
+                    attn.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim).to(
+                        original_v_weight.device)
+                    if self.float16:
+                        attn.q_proj.half()
+                        attn.v_proj.half()
+                    attn.q_proj.weight.data = original_q_weight
+                    attn.v_proj.weight.data = original_v_weight
+                else:
+                    raise NotImplementedError
+
+        return model

@@ -15,6 +15,7 @@ from .metrics import calculate_metric
 from .trainers.bilevel_minimax_trainer2 import BiLevelMinimaxTrainer2
 from .trainers.zo_llm_trainer import ZOLLMTrainer
 from .utils import *
+from .peft.lora import MultiTaskLoRALinear
 
 
 class Framework:
@@ -117,7 +118,6 @@ class Framework:
                 raise NotImplementedError("Prefix tuning is not supported for multi-task bilevel minimax")
             from .peft.prefix_tuning import PrefixTuning
             if "bilevel_minimax" in self.args.trainer:
-
                 model_s = copy.deepcopy(model)
                 PrefixTuning(model_s, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
                              float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
@@ -131,8 +131,8 @@ class Framework:
                 LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
                      tasks=self.training_tasks)
 
-            LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
-                 tasks=self.training_tasks)
+            self.lora = LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
+                             tasks=self.training_tasks)
 
         if self.args.prompt_tuning:
 
@@ -202,6 +202,17 @@ class Framework:
         """
         input_ids = torch.tensor([input_ids]).to(self.model.device)
 
+        if self.args.mode == 'lora' and len(self.test_tasks) > 1 and "bilevel_minimax" in self.args.trainer:
+            # set the merged attribute of all lora layers to True so only the base model is used
+            for module in self.model.modules():
+                if isinstance(module, MultiTaskLoRALinear):
+                    module.original_merged = module.merged
+                    module.merged = True
+            for module in self.model_p.modules():
+                if isinstance(module, MultiTaskLoRALinear):
+                    module.original_merged = module.merged
+                    module.merged = True
+
         if generation:
             args = self.args
             # Autoregressive generation
@@ -214,6 +225,15 @@ class Framework:
                                               self.tokenizer.eos_token_id], )
             # For generation, directly return the text output
             output_text = self.tokenizer.decode(outputs[0][input_ids.size(1):], skip_special_tokens=True).strip()
+
+            if self.args.mode == 'lora' and len(self.test_tasks) > 1 and "bilevel_minimax" in self.args.trainer:
+                # reset the merged attribute
+                for module in self.model.modules():
+                    if isinstance(module, MultiTaskLoRALinear):
+                        module.merged = module.original_merged
+                for module in self.model_p.modules():
+                    if isinstance(module, MultiTaskLoRALinear):
+                        module.merged = module.original_merged
             return output_text
         else:
             # with torch.inference_mode():
@@ -225,6 +245,16 @@ class Framework:
 
             selected_log_probs = log_probs[torch.arange(len(labels)).to(labels.device), labels]
             selected_log_probs = selected_log_probs.cpu().detach()
+
+            if self.args.mode == 'lora' and len(self.test_tasks) > 1 and "bilevel_minimax" in self.args.trainer:
+                # reset the merged attribute
+                for module in self.model.modules():
+                    if isinstance(module, MultiTaskLoRALinear):
+                        module.merged = module.original_merged
+                for module in self.model_p.modules():
+                    if isinstance(module, MultiTaskLoRALinear):
+                        module.merged = module.original_merged
+
             # Only return the option (candidate) part
             return selected_log_probs[-option_len:]
 
@@ -500,7 +530,7 @@ class Framework:
             trainer = ZOLLMTrainer(model=self.model,
                                    args=self.args,
                                    train_dataset=train_dataset,
-                                   eval_dataset=eval_dataset,
+                                   eval_dataset=dev_dataset,
                                    tokenizer=self.tokenizer,
                                    data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
                                                                                    pad_to_multiple_of=8) if self.args.train_as_classification else collator(
