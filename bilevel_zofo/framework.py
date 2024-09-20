@@ -18,6 +18,16 @@ from .utils import *
 from .peft.lora import MultiTaskLoRALinear
 
 
+def set_active_level(self, active_level):
+    """
+    Set the active level for the model
+    """
+    self.active_level = active_level
+    for module in self.modules():
+        if hasattr(module, "set_bilevel_active_level"):
+            module.set_bilevel_active_level(active_level)
+
+
 class Framework:
 
     def __init__(self, args, training_tasks, test_tasks, num_tasks_per_iteration=1):
@@ -25,10 +35,7 @@ class Framework:
         self.args = args
         self.training_tasks = training_tasks
         self.test_tasks = test_tasks
-        if "bilevel_minimax" in self.args.trainer:
-            self.model_p, self.model, self.tokenizer = self.load_model()
-        else:
-            self.model, self.tokenizer = self.load_model()
+        self.model, self.tokenizer = self.load_model()
         self.num_tasks_per_iteration = num_tasks_per_iteration
 
     def load_model(self):
@@ -116,51 +123,37 @@ class Framework:
         if self.args.prefix_tuning:
             if "bilevel_minimax" in self.args.trainer and len(self.training_tasks) > 1:
                 raise NotImplementedError("Prefix tuning is not supported for multi-task bilevel minimax")
-            from .peft.prefix_tuning import PrefixTuning
             if "bilevel_minimax" in self.args.trainer:
-                model_s = copy.deepcopy(model)
-                PrefixTuning(model_s, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
+                from .peft.prefix_tuning import BilevelPrefixTuning
+                BilevelPrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
+                                    float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
+            else:
+                from .peft.prefix_tuning import PrefixTuning
+                PrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
                              float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
-            PrefixTuning(model, num_prefix=self.args.num_prefix, reparam=not self.args.no_reparam,
-                         float16=self.args.load_float16, init_by_real_act=self.args.prefix_init_by_real_act)
 
         if self.args.lora:
-            from .peft.lora import LoRA
             if "bilevel_minimax" in self.args.trainer:
-                model_s = copy.deepcopy(model)
-                LoRA(model_s, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
-                     tasks=self.training_tasks)
-
-            self.lora = LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
-                             tasks=self.training_tasks)
+                from .peft.lora import BilevelLoRA
+                self.lora = BilevelLoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha,
+                                        float16=self.args.load_float16,
+                                        tasks=self.training_tasks)
+            else:
+                from .peft.lora import LoRA
+                self.lora = LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
+                                 tasks=self.training_tasks)
 
         if self.args.prompt_tuning:
-
             print("Adding Prompt Tuning to model...")
             if "bilevel_minimax" in self.args.trainer:
 
-                from .peft.prompt_tuning import PromptTuningModel_with_model
-                original_model = copy.deepcopy(model)
-                PromptTuningModel_s = PromptTuningModel_with_model(
+                from .peft.prompt_tuning import BilevelPromptTuning
+                BilevelPromptTuning(
                     model,
                     num_virtual_tokens=self.args.num_virtual_tokens,
                     init_by_real_tokens=self.args.prompt_init_by_real_tokens,
                     hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
                 )
-                model_s = PromptTuningModel_s.model
-
-                print("Total/Trainable number of parameters in model_s: {}/{}".format(
-                    sum(p.numel() for p in model.parameters()),
-                    sum(p.numel() for p in model.parameters() if p.requires_grad),
-                ))
-
-                PromptTuningModel_org = PromptTuningModel_with_model(
-                    original_model,
-                    num_virtual_tokens=self.args.num_virtual_tokens,
-                    init_by_real_tokens=self.args.prompt_init_by_real_tokens,
-                    hide_virtual_token_logits=True,  # a workaround for the other loss/prediction functions
-                )
-                model = PromptTuningModel_org.model
                 print("Total/Trainable number of parameters in model: {}/{}".format(
                     sum(p.numel() for p in model.parameters()),
                     sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -190,9 +183,10 @@ class Framework:
                     logger.info(f"Only tuning {n}")
 
         if "bilevel_minimax" in self.args.trainer:
-            return model, model_s, tokenizer
-        else:
-            return model, tokenizer
+            model.set_active_level = set_active_level.__get__(model, type(model))
+            model.set_active_level(BILEVEL_ACTIVE_LEVEL.LOWER)
+
+        return model, tokenizer
 
     def forward(self, input_ids, option_len=None, generation=False):
         """
@@ -205,10 +199,6 @@ class Framework:
         if self.args.mode == 'lora' and len(self.test_tasks) > 1 and "bilevel_minimax" in self.args.trainer:
             # set the merged attribute of all lora layers to True so only the base model is used
             for module in self.model.modules():
-                if isinstance(module, MultiTaskLoRALinear):
-                    module.original_merged = module.merged
-                    module.merged = True
-            for module in self.model_p.modules():
                 if isinstance(module, MultiTaskLoRALinear):
                     module.original_merged = module.merged
                     module.merged = True
@@ -231,9 +221,6 @@ class Framework:
                 for module in self.model.modules():
                     if isinstance(module, MultiTaskLoRALinear):
                         module.merged = module.original_merged
-                for module in self.model_p.modules():
-                    if isinstance(module, MultiTaskLoRALinear):
-                        module.merged = module.original_merged
             return output_text
         else:
             # with torch.inference_mode():
@@ -249,9 +236,6 @@ class Framework:
             if self.args.mode == 'lora' and len(self.test_tasks) > 1 and "bilevel_minimax" in self.args.trainer:
                 # reset the merged attribute
                 for module in self.model.modules():
-                    if isinstance(module, MultiTaskLoRALinear):
-                        module.merged = module.original_merged
-                for module in self.model_p.modules():
                     if isinstance(module, MultiTaskLoRALinear):
                         module.merged = module.original_merged
 
@@ -452,9 +436,6 @@ class Framework:
             # If --only_train_option and not with a non-differentiable objective, we wrap the forward function
             self.model.original_forward = self.model.forward
             self.model.forward = forward_wrap_with_option_len.__get__(self.model, type(self.model))
-            if "bilevel_minimax" in self.args.trainer:
-                self.model_p.original_forward = self.model_p.forward
-                self.model_p.forward = forward_wrap_with_option_len.__get__(self.model_p, type(self.model_p))
 
         if self.args.non_diff:
             collator = NondiffCollator
@@ -494,7 +475,6 @@ class Framework:
             #                                    )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
         elif self.args.trainer == "bilevel_minimax2":
             trainer = BiLevelMinimaxTrainer2(model=self.model,
-                                             model_p=self.model_p,
                                              args=self.args,
                                              train_dataset=train_dataset,
                                              eval_dataset=dev_dataset,

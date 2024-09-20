@@ -6,6 +6,7 @@ logger.setLevel(logging.INFO)
 
 import torch
 from torch import nn
+from ..utils import BILEVEL_ACTIVE_LEVEL
 
 
 def find_module(root_module: nn.Module, key: str):
@@ -58,6 +59,69 @@ def attn_forward_hook(self, *args, **kwargs):
 
     return self.original_forward(*args, **kwargs)
 
+
+def attn_forward_hook_bilevel(self, *args, **kwargs):
+    """
+    Replace the original attention forward with this to enable prefix tuning for both lower and upper level models
+    """
+
+    def _expand_bsz(x, bsz):
+        x = x.reshape(x.size(0), self.num_heads, -1).transpose(0,
+                                                               1)
+        x = x.unsqueeze(0).expand(bsz, *x.shape)
+        return x
+
+    if "hidden_states" in kwargs:
+        hidden_states = kwargs["hidden_states"]
+    else:
+        hidden_states = args[0]
+    bsz = hidden_states.size(0)
+
+    if 'past_key_value' not in kwargs or kwargs['past_key_value'] is None:
+        if self.reparam:
+            if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                prefix_keys = self.lower_level_model_prefix_mlp_keys(self.lower_level_model_prefix_input_embeds)
+                prefix_values = self.lower_level_model_prefix_mlp_values(self.lower_level_model_prefix_input_embeds)
+            else:
+                prefix_keys = self.upper_level_model_prefix_mlp_keys(self.upper_level_model_prefix_input_embeds)
+                prefix_values = self.upper_level_model_prefix_mlp_values(self.upper_level_model_prefix_input_embeds)
+
+        else:
+            if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                prefix_keys, prefix_values = self.lower_level_model_prefix_keys, self.lower_level_model_prefix_values
+            else:
+                prefix_keys, prefix_values = self.upper_level_model_prefix_keys, self.upper_level_model_prefix_values
+        kwargs['past_key_value'] = (_expand_bsz(prefix_keys, bsz), _expand_bsz(prefix_values, bsz))
+
+        if 'attention_mask' in kwargs and kwargs['attention_mask'] is not None:
+            am = kwargs['attention_mask']
+            kwargs['attention_mask'] = torch.cat(
+                [-torch.zeros((*am.shape[:-1], self.num_prefix), dtype=am.dtype, device=am.device), am], dim=-1)
+        elif len(args) > 1:  # attention mask is passed via positional argument
+            am = args[1]
+            am = torch.cat([-torch.zeros((*am.shape[:-1], self.num_prefix), dtype=am.dtype, device=am.device), am],
+                            dim=-1)
+            args = (args[0], am) + args[2:]
+
+    return self.original_forward(*args, **kwargs)
+
+
+def set_bilevel_active_level(self, active_level):
+    self.active_level = active_level
+    if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+        # set the all parameters of the upper level to be not requires_grad
+        for n, p in self.named_parameters():
+            if "upper_level_model" in n:
+                p.requires_grad = False
+            if "lower_level_model" in n:
+                p.requires_grad = True
+    else:
+        # set the all parameters of the lower level to be not requires_grad
+        for n, p in self.named_parameters():
+            if "lower_level_model" in n:
+                p.requires_grad = False
+            if "upper_level_model" in n:
+                p.requires_grad = True
 
 def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs):
@@ -208,5 +272,166 @@ class PrefixTuning:
                 torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
                 requires_grad=True)
             module.prefix_values = nn.Parameter(
+                torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
+                requires_grad=True)
+
+
+class BilevelPrefixTuning:
+
+    def __init__(self, model, num_prefix, reparam=True, embed_dim=512, mid_dim=512, float16=False,
+                 init_by_real_act=False):
+        """
+        Inputs:
+        num_prefix: number of prefix tokens
+        reparam: use reparameterization trick (not used in MeZO)
+        embed_dim, mid_dim: hyperparameters for reparameterization trick (not used in MeZO)
+        float15: whether the model parameters are float15
+        init_by_real_act: init prefix tokens by real activations
+        """
+
+        self.model = model
+        self.num_prefix = num_prefix
+        self.hidden_dim = model.config.hidden_size
+        self.float16 = float16
+
+        # Reparameterization
+        self.reparam = reparam
+        self.embed_dim = embed_dim
+        self.mid_dim = mid_dim
+
+        lower_level_model_input_embeds, upper_level_model_input_embeds = None, None  # For reparameterization
+        if model.config.model_type == "opt":
+            attention_name = "attn"
+            first_layer_name = "layers.0"
+            layer_name = "layers."
+        elif model.config.model_type == "roberta":
+            attention_name = "attention"
+            first_layer_name = "layer.0"
+            layer_name = "layer."
+        elif model.config.model_type in ["llama", "mistral"]:
+            attention_name = "self_attn"
+            first_layer_name = "layers.0"
+            layer_name = "layers."
+        else:
+            raise NotImplementedError
+
+        if init_by_real_act:
+            # Initialize prefix with real words' activations
+            assert not reparam
+
+            # Randomly sample input tokens
+            lower_level_model_input_tokens = torch.randint(low=0, high=model.config.vocab_size, size=(1, num_prefix),
+                                           dtype=torch.long).cuda()
+            upper_level_model_input_tokens = torch.randint(low=0, high=model.config.vocab_size, size=(1, num_prefix),
+                                             dtype=torch.long).cuda()
+
+            if model.config.model_type in ["opt", "llama", "mistral"]:
+                with torch.no_grad():
+                    # Get the real activations
+                    lower_level_model_real_key_values = model(input_ids=lower_level_model_input_tokens, use_cache=True).past_key_values
+                    upper_level_model_real_key_values = model(input_ids=upper_level_model_input_tokens, use_cache=True).past_key_values
+            else:
+                raise NotImplementedError
+
+        # Insert prefix
+        for key, _ in model.named_modules():
+            if key[-len(attention_name):] == attention_name:
+                layer_id = int(key.split(layer_name)[1].split(".")[0])
+                logger.info(f"Inject prefix to: {key}")
+                _, _, attn = find_module(model, key)
+
+                # Replace the old forward functions
+                attn.original_forward = attn.forward
+                attn.forward = attn_forward_hook_bilevel.__get__(attn, type(attn))
+                attn.set_bilevel_active_level = set_bilevel_active_level.__get__(attn, type(attn))
+                if not hasattr(attn, "num_heads"):
+                    attn.num_heads = model.config.num_attention_heads
+                first = first_layer_name in key
+                self.add_prefix(attn, first=first, lower_level_model_input_embeds=lower_level_model_input_embeds,
+                                upper_level_model_input_embeds=upper_level_model_input_embeds)
+
+                if first and self.reparam:
+                    lower_level_model_input_embeds = attn.lower_level_model_prefix_input_embeds
+                    upper_level_model_input_embeds = attn.upper_level_model_prefix_input_embeds
+                if init_by_real_act:
+                    logger.info(f"Reinitialize with actual activation: {key} (layer {layer_id})")
+                    lower_level_model_keys = lower_level_model_real_key_values[layer_id][0].squeeze(0).transpose(0, 1).reshape(num_prefix, -1)
+                    upper_level_model_values = lower_level_model_real_key_values[layer_id][1].squeeze(0).transpose(0, 1).reshape(num_prefix, -1)
+
+                    p_keys = upper_level_model_real_key_values[layer_id][0].squeeze(0).transpose(0, 1).reshape(num_prefix, -1)
+                    p_values = upper_level_model_real_key_values[layer_id][1].squeeze(0).transpose(0, 1).reshape(num_prefix, -1)
+
+                    attn.lower_level_model_prefix_keys.data = lower_level_model_keys.to(attn.lower_level_model_prefix_keys.data.device)
+                    attn.lower_level_model_prefix_values.data = upper_level_model_values.to(attn.lower_level_model_prefix_values.data.device)
+
+                    attn.upper_level_model_prefix_keys.data = p_keys.to(attn.upper_level_model_prefix_keys.data.device)
+                    attn.upper_level_model_prefix_values.data = p_values.to(attn.upper_level_model_prefix_values.data.device)
+
+        # Freeze non-prefix parameters
+        for n, p in model.named_parameters():
+            if "prefix" not in n:
+                p.requires_grad = False
+
+        # Replace the old prepare_inputs_for_generation function
+        model.prepare_inputs_for_generation = prepare_inputs_for_generation.__get__(model, type(model))
+
+    def add_prefix(self, module, first, lower_level_model_input_embeds=None, upper_level_model_input_embeds=None):
+        device = module.k_proj.weight.data.device
+        module.num_prefix = self.num_prefix
+        module.reparam = self.reparam
+        module.active_level = BILEVEL_ACTIVE_LEVEL.LOWER
+
+        if self.reparam:
+            if first:
+                # For the first layer we inject the embeddings
+                logger.info("For prefix+reparameterization, inject the embeddings in the first layer.")
+                module.lower_level_model_prefix_input_embeds = nn.Parameter(
+                    torch.randn(self.num_prefix, self.embed_dim, device=device, dtype=self.model.dtype),
+                    requires_grad=True)
+                module.upper_level_model_prefix_input_embeds = nn.Parameter(
+                    torch.randn(self.num_prefix, self.embed_dim, device=device, dtype=self.model.dtype),
+                    requires_grad=True)
+            else:
+                assert lower_level_model_input_embeds is not None and upper_level_model_input_embeds is not None
+                module.lower_level_model_prefix_input_embeds = lower_level_model_input_embeds
+                module.upper_level_model_prefix_input_embeds = upper_level_model_input_embeds
+
+            module.lower_level_model_prefix_mlp_keys = nn.Sequential(
+                nn.Linear(self.embed_dim, self.mid_dim),
+                nn.Tanh(),
+                nn.Linear(self.mid_dim, self.hidden_dim)
+            ).to(device)
+            module.lower_level_model_prefix_mlp_values = nn.Sequential(
+                nn.Linear(self.embed_dim, self.mid_dim),
+                nn.Tanh(),
+                nn.Linear(self.mid_dim, self.hidden_dim)
+            ).to(device)
+
+            module.upper_level_model_prefix_mlp_keys = nn.Sequential(
+                nn.Linear(self.embed_dim, self.mid_dim),
+                nn.Tanh(),
+                nn.Linear(self.mid_dim, self.hidden_dim)
+            ).to(device)
+            module.upper_level_model_prefix_mlp_values = nn.Sequential(
+                nn.Linear(self.embed_dim, self.mid_dim),
+                nn.Tanh(),
+                nn.Linear(self.mid_dim, self.hidden_dim)
+            ).to(device)
+            if self.float16:
+                module.lower_level_model_prefix_mlp_keys = module.lower_level_model_prefix_mlp_keys.half()
+                module.lower_level_model_prefix_mlp_values = module.lower_level_model_prefix_mlp_values.half()
+                module.upper_level_model_prefix_mlp_keys = module.upper_level_model_prefix_mlp_keys.half()
+                module.upper_level_model_prefix_mlp_values = module.upper_level_model_prefix_mlp_values.half()
+        else:
+            module.lower_level_model_prefix_keys = nn.Parameter(
+                torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
+                requires_grad=True)
+            module.lower_level_model_prefix_values = nn.Parameter(
+                torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
+                requires_grad=True)
+            module.upper_level_model_prefix_keys = nn.Parameter(
+                torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
+                requires_grad=True)
+            module.upper_level_model_prefix_values = nn.Parameter(
                 torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype),
                 requires_grad=True)

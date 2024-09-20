@@ -17,6 +17,7 @@ The Trainer class, to easily train a 🤗 Transformers from scratch or finetune 
 """
 import copy
 import inspect
+import itertools
 
 import datasets
 import math
@@ -77,6 +78,7 @@ from datasets import Dataset as HFDataset, Dataset
 import wandb
 from ..metrics import f1
 from ..peft.lora import MultiTaskLoRALinear
+from ..utils import BILEVEL_ACTIVE_LEVEL
 
 DEFAULT_CALLBACKS = [DefaultFlowCallback]
 DEFAULT_PROGRESS_CALLBACK = ProgressCallback
@@ -119,14 +121,12 @@ SCALER_NAME = "scaler.pt"
 class BiLevelMinimaxTrainer2(Trainer):
 
     # ZO-Bench added: new parameters to our trainer
-    def __init__(self, model_p, evaluate_func, dev_dataset, tasks_eval_samples, training_tasks, test_tasks,
+    def __init__(self, evaluate_func, dev_dataset, tasks_eval_samples, training_tasks, test_tasks,
                  *args, num_tasks_per_iteration=5, **kwargs):
         super().__init__(*args, **kwargs)  # Initialize the base class
         self.evaluate_func = evaluate_func
         self.dev_dataset = dev_dataset
         self.eval_samples = tasks_eval_samples
-        self.model_p = model_p
-        self.model_p_wrapped = model_p
         self.do_grad_scaling = False
         self.training_tasks = training_tasks
         self.test_tasks = test_tasks
@@ -149,8 +149,6 @@ class BiLevelMinimaxTrainer2(Trainer):
 
                 (self.model_wrapped,) = release_memory(self.model_wrapped)
                 self.model_wrapped = self.model
-                (self.model_p_wrapped,) = release_memory(self.model_p_wrapped)
-                self.model_p_wrapped = self.model_p
 
                 # Check for DeepSpeed *after* the intial pass and modify the config
                 if self.is_deepspeed_enabled:
@@ -164,12 +162,9 @@ class BiLevelMinimaxTrainer2(Trainer):
 
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
-        train_dataloader_p = self.get_train_dataloader()
 
         if self.is_fsdp_xla_v2_enabled:
             train_dataloader = tpu_spmd_dataloader(train_dataloader)
-
-        dev_dataloader = self.get_dev_dataloader()
 
         # MeZO added: Linear probing
         if self.args.linear_probing:
@@ -350,10 +345,8 @@ class BiLevelMinimaxTrainer2(Trainer):
                 gradient_checkpointing_kwargs = args.gradient_checkpointing_kwargs
 
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
-            self.model_p.gradient_checkpointing_enable(gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
 
         model = self._wrap_model(self.model_wrapped)
-        model_p = self._wrap_model(self.model_p_wrapped)
 
         # as the model is wrapped, don't use `accelerator.prepare`
         # this is for unhandled cases such as
@@ -371,13 +364,13 @@ class BiLevelMinimaxTrainer2(Trainer):
             self.model.train()
             if hasattr(self.lr_scheduler, "step"):
                 if self.use_apex:
-                    model, model_p = self.accelerator.prepare(self.model, self.model_p)
+                    model = self.accelerator.prepare(self.model)
                 else:
-                    model, model_p, self.optimizer = self.accelerator.prepare(self.model, self.model_p, self.optimizer)
+                    model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
             else:
                 # to handle cases wherein we pass "DummyScheduler" such as when it is specified in DeepSpeed config.)
-                model, model_p, self.optimizer, self.lr_scheduler = self.accelerator.prepare(
-                    self.model, self.model_p, self.optimizer, self.lr_scheduler
+                model,self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+                    self.model, self.optimizer, self.lr_scheduler
                 )
         elif self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
             # In this case we are in DDP + LOMO, which should be supported
@@ -385,14 +378,10 @@ class BiLevelMinimaxTrainer2(Trainer):
 
         if self.is_fsdp_enabled:
             self.model = self.model_wrapped = model
-            self.model_p = self.model_p_wrapped = model_p
 
         # for the rest of this function `model` is the outside model, whether it was wrapped or not
         if model is not self.model:
             self.model_wrapped = model
-
-        if model_p is not self.model_p:
-            self.model_p_wrapped = model_p
 
         # backward compatibility
         if self.is_deepspeed_enabled:
@@ -417,6 +406,16 @@ class BiLevelMinimaxTrainer2(Trainer):
         elif args.trainer == "zo_sgd":
             self.optimizer = SGD(self.model.parameters(), lr=args.learning_rate, momentum=args.momentum)
             assert args.lr_scheduler_type == 'constant', "we did not implement lr_schedule."
+        elif "bilevel" in args.trainer:
+            # load the lower level optimizer
+            lower_parameters = [param for name, param in self.model.named_parameters() if "upper_level_model" not in name]
+            assert args.lr_scheduler_type == 'constant', "we did not implement lr_schedule."
+            if args.optimizer == "adam":
+                self.optimizer = Adam(lower_parameters, lr=args.learning_rate)
+            elif args.optimizer == "adamw":
+                self.optimizer = AdamW(lower_parameters, lr=args.learning_rate)
+            elif args.optimizer == "sgd":
+                self.optimizer = SGD(lower_parameters, lr=args.learning_rate, momentum=args.momentum)
         else:
             assert args.lr_scheduler_type == 'constant', "we did not implement lr_schedule."
             if args.optimizer == "adam":
@@ -427,21 +426,21 @@ class BiLevelMinimaxTrainer2(Trainer):
                 self.optimizer = SGD(self.model.parameters(), lr=args.learning_rate, momentum=args.momentum)
 
         if args.trainer == "bilevel_minimax2":
-            print("load the upper level optimizer")
+            logger.info("loading the upper level optimizer")
+            upper_parameters = [param for name, param in self.model.named_parameters() if "lower_level_model" not in name]
             # assert args.upper_lr_scheduler_type == 'constant', "we did not implement lr_schedule."
             if args.upper_optimizer == "adam":
-                self.upper_optimizer = Adam(self.model_p.parameters(), lr=args.upper_learning_rate)
+                self.upper_optimizer = Adam(upper_parameters, lr=args.upper_learning_rate)
             elif args.upper_optimizer == "adamw":
-                self.upper_optimizer = AdamW(self.model_p.parameters(), lr=args.upper_learning_rate)
+                self.upper_optimizer = AdamW(upper_parameters, lr=args.upper_learning_rate)
             elif args.upper_optimizer == "sgd":
-                self.upper_optimizer = SGD(self.model_p.parameters(), lr=args.upper_learning_rate,
+                self.upper_optimizer = SGD(upper_parameters, lr=args.upper_learning_rate,
                                            momentum=args.upper_momentum)
 
         # important: at this point:
         # self.model         is the Transformers Model
         # self.model_wrapped is DDP(Transformers Model), Deepspeed(Transformers Model),
         # FSDP(Transformers Model), Dynamo Optimized Module(Transformers Model) etc.
-        # Same goes for self.model_p and self.model_p_wrapped
 
         # Train!
         logger.info("***** Running training *****")
@@ -523,7 +522,6 @@ class BiLevelMinimaxTrainer2(Trainer):
         total_steps = 0
         total_batched_samples = 0
         for epoch in range(epochs_trained, num_train_epochs):
-            print(f"-------------------------- Training Epoch {epoch} --------------------------")
             epoch_iterator = self.get_train_dataloader()
             if hasattr(epoch_iterator, "set_epoch"):
                 epoch_iterator.set_epoch(epoch)
@@ -551,13 +549,36 @@ class BiLevelMinimaxTrainer2(Trainer):
                 rng_to_sync = True
 
             step = -1
-            train_iterator_p = iter(train_dataloader_p)
-            dev_iterator = iter(dev_dataloader)
+            train_iterator_p = itertools.cycle(self.get_train_dataloader())
+            dev_iterator = itertools.cycle(self.get_dev_dataloader())
             for step, batch in enumerate(epoch_iterator):
                 total_batched_samples += 1
                 total_steps += 1
+                model.set_active_level(BILEVEL_ACTIVE_LEVEL.LOWER)
+
+                if rng_to_sync:
+                    self._load_rng_state(resume_from_checkpoint)
+                    rng_to_sync = False
+
+                # Skip past any already trained steps if resuming training
+                if steps_trained_in_current_epoch > 0:
+                    steps_trained_in_current_epoch -= 1
+                    if steps_trained_progress_bar is not None:
+                        steps_trained_progress_bar.update(1)
+                    if steps_trained_in_current_epoch == 0:
+                        self._load_rng_state(resume_from_checkpoint)
+                    continue
+                elif steps_trained_progress_bar is not None:
+                    steps_trained_progress_bar.close()
+                    steps_trained_progress_bar = None
+
+                if step % args.gradient_accumulation_steps == 0:
+                    self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
+
+                # torch.cuda.synchronize()
+                step_start_time = time.time()
+
                 for task in batch:
-                    torch.cuda.empty_cache()
                     inputs = batch[task]
                     if self.args.lora:
                         self.set_active_lora(model, task)
@@ -582,27 +603,6 @@ class BiLevelMinimaxTrainer2(Trainer):
                                 .cpu()
                                 .item()
                             )
-                    if rng_to_sync:
-                        self._load_rng_state(resume_from_checkpoint)
-                        rng_to_sync = False
-
-                    # torch.cuda.synchronize()
-                    step_start_time = time.time()
-
-                    # Skip past any already trained steps if resuming training
-                    if steps_trained_in_current_epoch > 0:
-                        steps_trained_in_current_epoch -= 1
-                        if steps_trained_progress_bar is not None:
-                            steps_trained_progress_bar.update(1)
-                        if steps_trained_in_current_epoch == 0:
-                            self._load_rng_state(resume_from_checkpoint)
-                        continue
-                    elif steps_trained_progress_bar is not None:
-                        steps_trained_progress_bar.close()
-                        steps_trained_progress_bar = None
-
-                    if step % args.gradient_accumulation_steps == 0:
-                        self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                     # MeZO added: estimate gradient
                     if args.trainer in ["zo_sgd", "zo_adam", "zo_sign_opt"]:
@@ -688,31 +688,31 @@ class BiLevelMinimaxTrainer2(Trainer):
                                 grad_norm = _grad_norm
 
                         self.optimizer.step()
-
                         self.control = self.callback_handler.on_optimizer_step(args, self.state, self.control)
+
                         optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
                         if optimizer_was_run:
                             # Delay optimizer scheduling until metrics are generated
                             if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                                 self.lr_scheduler.step()
 
-                        model.zero_grad()
+                    model.zero_grad()
 
-                    self.state.global_step += 1
-                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
-                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
-                    if self.args.mode == "lora":
-                        self.disable_lora(model)
-                    self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
-                    if self.args.mode == "lora":
-                        self.enable_lora(model)
+                    if not self.state.global_step % self.args.lower_level_num_train_steps == 0 or \
+                            self.state.global_step == 0:
+                        self.state.global_step += 1
+                        self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                        self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                        self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
 
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
                 # check whether to do upper level update:
-                if (total_steps + 1) % self.args.lower_level_num_train_steps == 0:
-                    print('perform the outer loop')
+                if self.state.global_step % self.args.lower_level_num_train_steps == 0 and \
+                        self.state.global_step != 0:
+                    model.set_active_level(BILEVEL_ACTIVE_LEVEL.UPPER)
+                    logger.info("\nUpdate upper level model\n")
                     try:
                         tasks_inputs_f = next(dev_iterator)
                     except StopIteration:
@@ -724,20 +724,24 @@ class BiLevelMinimaxTrainer2(Trainer):
                         break
 
                     for task in tasks_inputs_f:
-                        torch.cuda.empty_cache()
                         inputs_f = tasks_inputs_f[task]
                         inputs_p = tasks_inputs_p[task]
 
                         if self.args.lora:
-                            self.set_active_lora(model_p, task)
+                            self.set_active_lora(model, task)
 
-                        self.compute_grad_p(model_p, model, inputs_f, inputs_p, task, epoch, ignore_keys_for_eval)
-                        self.compute_zo_grad_theta(model_p, model, inputs_f, inputs_p)
-                    self.bilevel_upper_step(model_p)
+                        self.compute_grad_p(model, inputs_f, inputs_p, task, epoch, ignore_keys_for_eval)
+                        self.compute_zo_grad_theta(model, inputs_f, inputs_p)
+                    self.bilevel_upper_step(model)
 
                     self.sampled_tasks = np.random.choice(len(self.training_tasks), self.num_tasks_per_iteration,
                                                           replace=False)
                     logger.info(f"Sampled tasks: {[self.training_tasks[i] for i in self.sampled_tasks]}")
+
+                    self.state.global_step += 1
+                    self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
+                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+                    self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
 
                 # torch.cuda.synchronize()
                 train_step_duration = time.time() - step_start_time
@@ -749,26 +753,6 @@ class BiLevelMinimaxTrainer2(Trainer):
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
-
-                if self.args.eval_steps is not None and (total_steps + 1) % self.args.eval_steps == 0:
-                    print(
-                        f"=========================> Evaluating at step {total_steps}... <=========================")
-                    for i, task_eval_samples in enumerate(self.eval_samples):
-                        task = self.test_tasks[i]
-                        test_metrics = self.evaluate_func(task, [], task_eval_samples)
-                        if "accuracy" in test_metrics:
-                            self.log({f"test_acc": test_metrics[
-                                "accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
-                            wandb.log({f"test_acc": test_metrics[
-                                "accuracy"]})  # , "val_acc": val_metrics["accuracy"]})
-                        else:
-                            keys = list(test_metrics.keys())
-                            log_dict = {}
-                            for k in keys:
-                                log_dict[f'task{task}-test_' + k] = test_metrics[k]
-                                # log_dict['val_' + k] = val_metrics[k]
-                            self.log(log_dict)
-                            wandb.log(log_dict)
 
                 if self.control.should_log:
                     max_memory_allocated = 0
@@ -790,11 +774,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                 self.control.should_training_stop = True
 
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
-            if self.args.mode == "lora":
-                self.disable_lora(model)
             self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
-            if self.args.mode == "lora":
-                self.enable_lora(model)
 
             if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
                 if is_torch_xla_available():
@@ -871,15 +851,25 @@ class BiLevelMinimaxTrainer2(Trainer):
 
     ###########upper level update#######################
     ######################################################
-    def compute_upper_loss(self, model_p, model, inputs_f, inputs_p):
-        upper_loss = self.compute_loss(model_p, inputs_f) + self.args.Lambda * (
-                    self.compute_loss(model_p, inputs_p) - self.compute_loss(model, inputs_p))
+    def compute_upper_loss(self, model, inputs_f, inputs_p, calc_lower_loss=True):
+        if calc_lower_loss:
+            model.set_active_level(BILEVEL_ACTIVE_LEVEL.LOWER)
+            c = self.compute_loss(model, inputs_p)
+        else:
+            c = 0
+        model.set_active_level(BILEVEL_ACTIVE_LEVEL.UPPER)
+
+        a = self.compute_loss(model, inputs_f)
+        b = self.compute_loss(model, inputs_p)
+
+        upper_loss = a + self.args.Lambda * (b - c)
+        # upper_loss = self.compute_loss(model_p, inputs_f) + self.args.Lambda * (
+        #             self.compute_loss(model_p, inputs_p) - self.compute_loss(model, inputs_p))
 
         return upper_loss
 
-    def compute_grad_p(self, model_p, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval):
-        model.eval()
-        model_p.train()
+    def compute_grad_p(self, model, inputs_f, inputs_p, trial, epoch, ignore_keys_for_eval):
+        model.train()
 
         inputs_p = self._prepare_inputs(inputs_p)
         inputs_f = self._prepare_inputs(inputs_f)
@@ -889,7 +879,7 @@ class BiLevelMinimaxTrainer2(Trainer):
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
         with self.compute_loss_context_manager():
-            loss = self.compute_upper_loss(model_p, model, inputs_f, inputs_p)
+            loss = self.compute_upper_loss(model, inputs_f, inputs_p, calc_lower_loss=False)
 
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -912,7 +902,7 @@ class BiLevelMinimaxTrainer2(Trainer):
         return loss.detach()
 
     # @torch.no_grad()
-    def compute_zo_grad_theta(self, model_p, model, inputs_f, inputs_p):
+    def compute_zo_grad_theta(self, model, inputs_f, inputs_p):
         """
         Estimate gradient of the outer loss and update the parameters. Return the loss from f(theta + z)
         """
@@ -928,15 +918,11 @@ class BiLevelMinimaxTrainer2(Trainer):
             addtional_parameter_name = "prefix"
 
         self.named_parameters_for_zo_step = []
-        for name, param in model_p.named_parameters():
+        for name, param in model.named_parameters():
             if addtional_parameter_name not in name:
                 param.requires_grad = True
                 param.grad = None
                 self.named_parameters_for_zo_step.append((name, param))
-
-        print("1. Trainable number of parameters in model_p: {}".format(
-            sum(p.numel() for p in model_p.parameters() if p.requires_grad),
-        ))
 
         # Sample the random seed for sampling z
         self.zo_random_seed = np.random.randint(1000000000)
@@ -945,7 +931,7 @@ class BiLevelMinimaxTrainer2(Trainer):
         self.zo_perturb_parameters(scaling_factor=1)
 
         # calculate perturbed upper level loss
-        loss1 = self.zo_forward_upper(model_p, model, inputs_f, inputs_p)
+        loss1 = self.zo_forward_upper(model, inputs_f, inputs_p)
 
         # Second function evaluation
         assert args.q == 1, ("only support q=1 for the memory efficiency. If you want to implement q>1,"
@@ -953,7 +939,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                              "In addition, we need to set different random seed for different z in the q-loop.")
         for _ in range(args.q):  # TODO shall we change the seed?
             self.zo_perturb_parameters(scaling_factor=-1)
-            loss2 = self.zo_forward_upper(model_p, model, inputs_f, inputs_p)
+            loss2 = self.zo_forward_upper(model, inputs_f, inputs_p)
             self.projected_grad = ((loss1 - loss2) / self.args.zo_eps).item()
 
             # Set the random seed to ensure that we sample the same z for perturbation/update
@@ -971,8 +957,8 @@ class BiLevelMinimaxTrainer2(Trainer):
                     param.grad += graddiff_times_z / args.q  # NOTE this q division does not work for q>1.
         assert self.args.gradient_accumulation_steps == 1
 
-    def bilevel_upper_step(self, model_p):
-        self.upper_optimizer.step()  # will only update grad that is not None.  
+    def bilevel_upper_step(self, model):
+        self.upper_optimizer.step()  # will only update grad that is not None.
 
         # set the grad for the finetuned parameters theta false and update the theta in the lower level model
         if self.args.prompt_tuning:
@@ -981,28 +967,13 @@ class BiLevelMinimaxTrainer2(Trainer):
             addtional_parameter_name = "lora"
         elif self.args.prefix_tuning:
             addtional_parameter_name = "prefix"
-        # TODO check this
-        print("2. Trainable number of parameters in self.model: {}".format(
-            sum(p.numel() for p in self.model.parameters() if p.requires_grad),
-        ))
-        print("2. Trainable number of parameters in model_p: {}".format(
-            sum(p.numel() for p in model_p.parameters() if p.requires_grad),
-        ))
 
-        for (name, param), (_, param_upper) in zip(self.model.named_parameters(), model_p.named_parameters()):
+        for name, param in model.named_parameters():
             if addtional_parameter_name not in name:
-                param.data.copy_(param_upper.data)
-                param_upper.requires_grad = False
                 param.requires_grad = False
+                param.grad = None
 
-        print("3. Trainable number of parameters in self.model: {}".format(
-            sum(p.numel() for p in self.model.parameters() if p.requires_grad),
-        ))
-        print("3. Trainable number of parameters in model_p: {}".format(
-            sum(p.numel() for p in model_p.parameters() if p.requires_grad),
-        ))
-
-        model_p.zero_grad()
+        model.zero_grad()
 
     #
     # ############## MeZO ##############
@@ -1047,7 +1018,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
         return loss.detach()
 
-    def zo_forward_upper(self, model_p, model, inputs_f, inputs_p):
+    def zo_forward_upper(self, model, inputs_f, inputs_p):
         """
         Get (no gradient) loss from the model. Dropout is turned off too.
         """
@@ -1057,7 +1028,7 @@ class BiLevelMinimaxTrainer2(Trainer):
             inputs_p = self._prepare_inputs(inputs_p)
             inputs_f = self._prepare_inputs(inputs_f)
             with self.compute_loss_context_manager():
-                loss = self.compute_upper_loss(model_p, model, inputs_f, inputs_p)
+                loss = self.compute_upper_loss(model, inputs_f, inputs_p)
             if self.args.n_gpu > 1:
                 # Warning: this is copied from the original Huggingface Trainer. Untested.
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -1673,12 +1644,109 @@ class BiLevelMinimaxTrainer2(Trainer):
     @staticmethod
     def disable_lora(model):
         for module in model.modules():
-            if isinstance(module, MultiTaskLoRALinear):
+            if isinstance(module, MultiTaskLoRALinear) and len(module.tasks) > 1:
                 module.original_merged = module.merged
                 module.merged = True
 
     @staticmethod
     def enable_lora(model):
         for module in model.modules():
-            if isinstance(module, MultiTaskLoRALinear):
+            if isinstance(module, MultiTaskLoRALinear) and len(module.tasks) > 1:
                 module.merged = module.original_merged
+
+    def _maybe_log_save_evaluate(self, tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval):
+        original_bilevel_active_level = model.active_level
+        model.set_active_level(BILEVEL_ACTIVE_LEVEL.UPPER)
+        if self.args.mode == "lora":
+            self.disable_lora(model)
+        super()._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
+
+        if self.args.mode == "lora":
+            self.enable_lora(model)
+        model.set_active_level(original_bilevel_active_level)
+
+    def evaluate(
+            self,
+            eval_dataset: Optional[Dataset] = None,
+            ignore_keys: Optional[List[str]] = None,
+            metric_key_prefix: str = "eval",
+    ) -> Dict[str, float]:
+        """
+        Run evaluation and returns metrics.
+
+        The calling script will be responsible for providing a method to compute metrics, as they are task-dependent
+        (pass it to the init `compute_metrics` argument).
+
+        You can also subclass and override this method to inject custom behavior.
+
+        Args:
+            eval_dataset (`Dataset`, *optional*):
+                Pass a dataset if you wish to override `self.eval_dataset`. If it is a [`~datasets.Dataset`], columns
+                not accepted by the `model.forward()` method are automatically removed. It must implement the `__len__`
+                method.
+            ignore_keys (`List[str]`, *optional*):
+                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
+                gathering predictions.
+            metric_key_prefix (`str`, *optional*, defaults to `"eval"`):
+                An optional prefix to be used as the metrics key prefix. For example the metrics "bleu" will be named
+                "eval_bleu" if the prefix is "eval" (default)
+
+        Returns:
+            A dictionary containing the evaluation loss and the potential metrics computed from the predictions. The
+            dictionary also contains the epoch number which comes from the training state.
+        """
+        # memory metrics - must set up as early as possible
+        self._memory_tracker.start()
+
+        eval_dataloader = self.get_eval_dataloader(eval_dataset)
+        start_time = time.time()
+
+        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+        output = eval_loop(
+            eval_dataloader,
+            description="Evaluation",
+            # No point gathering the predictions if there are no metrics, otherwise we defer to
+            # self.args.prediction_loss_only
+            prediction_loss_only=True if self.compute_metrics is None else None,
+            ignore_keys=ignore_keys,
+            metric_key_prefix=metric_key_prefix,
+        )
+
+        total_batch_size = self.args.eval_batch_size * self.args.world_size
+        if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+        output.metrics.update(
+            speed_metrics(
+                metric_key_prefix,
+                start_time,
+                num_samples=output.num_samples,
+                num_steps=math.ceil(output.num_samples / total_batch_size),
+            )
+        )
+
+        test_logs = {}
+        for i, task_eval_samples in enumerate(self.eval_samples):
+            task = self.test_tasks[i]
+            test_metrics = self.evaluate_func(task, [], task_eval_samples)
+            if "accuracy" in test_metrics:
+                test_logs[f'task{str(task)}-test_accuracy'] = test_metrics["accuracy"]
+            else:
+                keys = list(test_metrics.keys())
+                log_dict = {}
+                for k in keys:
+                    log_dict[f'task{str(task)}-test_' + k] = test_metrics[k]
+                    # log_dict['val_' + k] = val_metrics[k]
+                test_logs.update(log_dict)
+
+        output.metrics.update(test_logs)
+        self.log(output.metrics)
+
+        if DebugOption.TPU_METRICS_DEBUG in self.args.debug:
+            # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
+            xm.master_print(met.metrics_report())
+
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, output.metrics)
+
+        self._memory_tracker.stop_and_update_metrics(output.metrics)
+
+        return output.metrics

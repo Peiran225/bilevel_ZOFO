@@ -374,3 +374,8 @@ def write_predictions_to_file(final_preds, output):
 
 def write_metrics_to_file(metrics, output):
     json.dump(metrics, open(output, "w"), cls=EnhancedJSONEncoder, indent=4)
+
+
+class BILEVEL_ACTIVE_LEVEL:
+    LOWER = 0
+    UPPER = 1
