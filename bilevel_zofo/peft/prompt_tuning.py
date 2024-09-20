@@ -361,7 +361,7 @@ class BilevelPromptTuning:
             "hide_virtual_token_logits": hide_virtual_token_logits,
         }
         model.forward = partial(
-            _model_forward_hook.__get__(model, type(model)),
+            _bilevel_model_forward_hook.__get__(model, type(model)),
             **forward_hook_kwargs
         )
 

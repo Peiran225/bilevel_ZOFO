@@ -222,7 +222,7 @@ def main():
                     f"-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
                     f"-LR{args.learning_rate}-{args.lr_scheduler_type}-ZOEPS{args.zo_eps}-Q{args.q}")
 
-    # we only support mylti-task for lora
+    # we only support multi-task for lora
     if len(args.training_tasks) > 1 and not args.mode == "lora":
         raise NotImplementedError("We currently only support multitask for LoRA")
     args.tag = "momen" + args.tag if args.momentum > 0 else args.tag
