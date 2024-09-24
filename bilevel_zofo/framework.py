@@ -1,5 +1,4 @@
 import os
-import copy
 
 from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
 from torch.utils.data import Dataset
@@ -37,6 +36,9 @@ class Framework:
         self.test_tasks = test_tasks
         self.model, self.tokenizer = self.load_model()
         self.num_tasks_per_iteration = num_tasks_per_iteration
+        if self.args.meta_icl_test_k is not None:
+            self.meta_icl_max_length_per_example = 256
+            self.meta_icl_max_length = min(self.meta_icl_max_length_per_example * self.args.meta_icl_test_k, 1024)
 
     def load_model(self):
         """
@@ -119,6 +121,9 @@ class Framework:
             # LLaMA padding token
             tokenizer.pad_token_id = 0  # technically <unk>
 
+        if "gpt" in self.args.model_name.lower():
+            # GPT padding token
+            tokenizer.pad_token_id = 4
         # Prefix tuning/LoRA
         if self.args.prefix_tuning:
             if "bilevel_minimax" in self.args.trainer and len(self.training_tasks) > 1:
@@ -379,13 +384,14 @@ class Framework:
             for sample in samples:
                 encoded_candidates, option_lens = encode_prompt(task,
                                                                 task.get_template(
-                                                                    template_version=self.args.template_ver), [],
+                                                                    template_version=self.args.template_ver),
+                                                                [] if sample.demo_samples is None else sample.demo_samples,
                                                                 sample,
                                                                 self.tokenizer, max_length=self.args.max_length,
                                                                 generation=task.generation,
                                                                 generation_with_gold=True,
                                                                 max_new_tokens=self.args.max_new_tokens)
-                if task.generation:
+                if task.generation or sample.candidates is None:
                     correct_candidate_id = 0
                 elif isinstance(sample.correct_candidate, list):
                     correct_candidate_id = sample.candidates.index(sample.correct_candidate[0])
@@ -419,17 +425,145 @@ class Framework:
                                  "labels": encoded_candidates[correct_candidate_id]})
             return data
 
-        with count_time("Tokenizing training samples"):
-            train_datasets = [HFDataset(_convert(train_samples, self.training_tasks[i])) for i, train_samples in
+        def _convert_meta_icl(samples, task):
+            template = task.get_template(template_version=self.args.template_ver)
+
+            def _prepro_each_datapoint(dp, is_first=True, is_training=False, for_demonstrations=False):
+                dp = dp.copy()
+
+                no_label = np.all([option == "" for option in dp["options"]])
+                no_input = dp["input"] == ""
+
+                if template.method == "direct":
+                    if not is_first:
+                        if no_input:
+                            dp["input"] = "\n\n" + dp["input"]
+                        else:
+                            dp["input"] = "\n\n\n" + dp["input"]
+                    if not no_label:
+                        dp["output"] = "\n" + dp["output"]
+                        if "options" in dp:
+                            dp["options"] = ["\n" + opt for opt in dp["options"]]
+                elif template.method == "channel":
+                    if not is_first:
+                        dp["output"] = "\n\n\n" + dp["output"]
+                        if "options" in dp:
+                            dp["options"] = ["\n\n\n" + opt for opt in dp["options"]]
+                    if not no_input:
+                        if not no_label:
+                            dp["input"] = "\n" + dp["input"]
+                else:
+                    raise NotImplementedError()
+
+                input_tokens = self.tokenizer(dp["input"])["input_ids"]
+
+                if is_training or for_demonstrations:
+                    output_tokens = self.tokenizer(dp["output"])["input_ids"]
+
+                    if "task" in dp:
+                        if (dp["task"].startswith("inst:piqa") or dp["task"].startswith(
+                                "inst:yahoo_answers_topics")) and \
+                                len(input_tokens) + len(output_tokens) + 2 > self.max_length_per_example:
+                            input_tokens = input_tokens[:self.max_length_per_example // 2]
+                            output_tokens = output_tokens[:self.max_length_per_example // 2 - 2]
+
+                        elif len(input_tokens) >= self.max_length_per_example - 2 - len(output_tokens):
+                            if dp["task"].startswith("inst:") and len(input_tokens) < len(output_tokens):
+                                output_tokens = output_tokens[:self.max_length_per_example - 2 - len(input_tokens)]
+                            else:
+                                input_tokens = input_tokens[:self.max_length_per_example - 2 - len(output_tokens)]
+
+                    assert len(input_tokens) + len(output_tokens) + 2 <= self.max_length_per_example, \
+                        (dp.get("task", None), len(input_tokens), len(output_tokens), self.max_length_per_example)
+
+                    if task.method == "direct":
+                        return input_tokens, output_tokens
+                    elif task.method == "channel":
+                        return output_tokens, input_tokens
+                    else:
+                        raise NotImplementedError()
+
+            for dp in samples:
+                assert isinstance(dp, dict), ("Training example should be a dictionary", dp)
+                assert "input" in dp and "output" in dp, ("Training example should contain input and output", dp)
+
+            # each datapoint: passage, question, options, output
+            bos_token_id = self.tokenizer.bos_token_id
+            eos_token_id = self.tokenizer.eos_token_id
+
+            data = []
+
+            first_tokenized = []
+            nonfirst_tokenized = []
+
+            for dp in samples:
+                first_tokenized.append(_prepro_each_datapoint(
+                    dp, is_first=True, is_training=True))
+                nonfirst_tokenized.append(_prepro_each_datapoint(
+                    dp, is_first=False, is_training=True))
+
+            N = 1
+
+            def prepro_sentence_pair_single(ids1, ids2, max_length,
+                                            bos_token_id, eos_token_id,
+                                            allow_truncation=False):
+                # if bos_token_id is not None:
+                #    ids1 = [bos_token_id] + ids1
+                # if eos_token_id is not None:
+                #    ids2 = ids2 + [eos_token_id]
+                if allow_truncation and len(ids1) + len(ids2) > max_length:
+                    ids1 = ids1[len(ids1) + len(ids2) - max_length:]  # len = max_length-len(ids2)
+                    assert len(ids1) + len(ids2) == max_length
+
+                n_mask = max_length - len(ids1) - len(ids2)
+                assert n_mask >= 0, (max_length, len(ids1), len(ids2))
+                input_ids = ids1 + ids2 + [0 for _ in range(n_mask)]
+                attention_mask = [1 for _ in ids1 + ids2] + [0 for _ in range(n_mask)]
+                token_type_ids = [0 for _ in ids1] + [1 for _ in ids2] + [0 for _ in range(n_mask)]
+                return input_ids, attention_mask, token_type_ids
+
+            def _draw_random(tot, n, exclude_indices):
+                r = np.random.choice([i for i in range(tot) if i not in exclude_indices])
+                if n == 1:
+                    return [r]
+                return [r] + _draw_random(tot, n - 1, exclude_indices | {r})
+
+            for dp_idx, dp in enumerate(samples):
+                for _ in range(N):
+                    demo_indices = _draw_random(len(samples), self.args.meta_icl_test_k, {dp_idx})
+                    inputs = []
+                    for demo_idx, index in enumerate(demo_indices):
+                        if demo_idx == 0:
+                            inputs += first_tokenized[index][0] + first_tokenized[index][1]
+                        else:
+                            inputs += nonfirst_tokenized[index][0] + nonfirst_tokenized[index][1]
+                        assert index != dp_idx
+                    inputs += nonfirst_tokenized[dp_idx][0]
+                    outputs = nonfirst_tokenized[dp_idx][1]
+
+                    encoded = prepro_sentence_pair_single(
+                        inputs, outputs, self.meta_icl_max_length, bos_token_id, eos_token_id,
+                        allow_truncation=True)
+
+                    data.append({"input_ids": encoded[0],
+                                 "attention_mask": encoded[1],
+                                 "token_type_ids": encoded[2]})
+
+            return data
+
+        convert_fn = _convert_meta_icl() if "meta_icl" in self.args.training_tasks else _convert
+        with count_time("Preparing training samples"):
+
+            train_datasets = [HFDataset(convert_fn(train_samples, self.training_tasks[i])) for i, train_samples in
                               enumerate(tasks_train_samples)]
-            eval_datasets = [HFDataset(_convert(eval_samples, self.test_tasks[i])) for i, eval_samples in
-                             enumerate(tasks_eval_samples)]
-            dev_datasets = [HFDataset(_convert(dev_samples, self.training_tasks[i])) for i, dev_samples in
+            # eval_datasets = [HFDataset(_convert(eval_samples, self.test_tasks[i])) for i, eval_samples in
+            #                  enumerate(tasks_eval_samples)]
+            dev_datasets = [HFDataset(convert_fn(dev_samples, self.training_tasks[i])) for i, dev_samples in
                             enumerate(tasks_dev_samples)]
 
             # concatenate all the datasets
             train_dataset = torch.utils.data.ConcatDataset(train_datasets)
-            eval_dataset = torch.utils.data.ConcatDataset(eval_datasets)
+            # eval_dataset = torch.utils.data.ConcatDataset(eval_datasets)
             dev_dataset = torch.utils.data.ConcatDataset(dev_datasets)
 
         if self.args.only_train_option and not self.args.non_diff:
@@ -443,37 +577,7 @@ class Framework:
             collator = DataCollatorForTokenClassification
 
         print(self.args)
-        if self.args.trainer == "bilevel_minimax":
-            raise NotImplementedError("bilevel_minimax is not supported")
-            # self.lower_level_training_args = TrainingArguments(
-            #     output_dir="lower_level_output/model",
-            #     learning_rate=self.args.lower_level_learning_rate,  # 1e-3
-            #     per_device_train_batch_size=self.args.lower_level_per_device_train_batch_size,
-            #     per_device_eval_batch_size=self.args.lower_level_per_device_eval_batch_size,
-            #     num_train_epochs=self.args.lower_level_num_train_epochs,
-            #     max_steps=self.args.lower_level_num_train_steps,
-            #     evaluation_strategy="no",
-            #     save_strategy="no",
-            #     load_best_model_at_end=True,
-            #     lr_scheduler_type="constant",
-            #     seed=self.args.train_set_seed
-            # )
-            # trainer = OurBilevelMinimaxTrainer(model=self.model,
-            #                                    model_s=self.model_s,
-            #                                    args=self.args,
-            #                                    lower_level_training_args=self.lower_level_training_args,
-            #                                    lower_train_dataset=dev_dataset,
-            #                                    train_dataset=train_dataset,
-            #                                    eval_dataset=eval_dataset,
-            #                                    tokenizer=self.tokenizer,
-            #                                    data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-            #                                                                                    pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-            #                                        self.tokenizer, pad_to_multiple_of=8),
-            #                                    eval_samples=eval_samples,
-            #                                    dev_samples=dev_samples,
-            #                                    evaluate_func=self.evaluate,
-            #                                    )  # the upper level uses the dev_dataset for ZO method. the train_dataset in the OurBilevelTrainer is used for upper level updates. Therefore we set train_dataset=dev_dataset
-        elif self.args.trainer == "bilevel_minimax2":
+        if "bilevel_minimax" in self.args.trainer:
             trainer = BiLevelMinimaxTrainer2(model=self.model,
                                              args=self.args,
                                              train_dataset=train_dataset,
@@ -489,23 +593,6 @@ class Framework:
                                              evaluate_func=self.evaluate,
                                              num_tasks_per_iteration=self.num_tasks_per_iteration
                                              )
-        elif self.args.trainer == "bilevel_minimax_hyper_p":
-            raise NotImplementedError("bilevel_minimax_hyper_p is not supported")
-            # trainer = OurBilevelMinimaxTrainer(model=self.model,
-            #                                    model_s=self.model_s,
-            #                                    args=self.args,
-            #                                    lower_level_training_args=self.lower_level_training_args,
-            #                                    lower_train_dataset=dev_dataset,
-            #                                    train_dataset=train_dataset,
-            #                                    eval_dataset=eval_dataset,
-            #                                    tokenizer=self.tokenizer,
-            #                                    data_collator=DataCollatorWithPaddingAndNesting(self.tokenizer,
-            #                                                                                    pad_to_multiple_of=8) if self.args.train_as_classification else collator(
-            #                                        self.tokenizer, pad_to_multiple_of=8),
-            #                                    eval_samples=eval_samples,
-            #                                    dev_samples=dev_samples,
-            #                                    evaluate_func=self.evaluate,
-            #                                    )
         else:
             trainer = ZOLLMTrainer(model=self.model,
                                    args=self.args,

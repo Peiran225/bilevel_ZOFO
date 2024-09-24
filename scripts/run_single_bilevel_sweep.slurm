@@ -16,4 +16,4 @@ source ~/.bashrc
 conda activate zollm
 
 cd /ihchomes/rezashkv/research/projects/bilevel_ZOFO/ || exit
-wandb agent "reza_shkv/zo_bench/d1hu9sst"
+wandb agent "reza_shkv/zo_bench/8yb6ud47"

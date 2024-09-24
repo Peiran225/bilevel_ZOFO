@@ -1,3 +1,6 @@
+import numpy as np
+from transformers.models.gpt2.tokenization_gpt2 import GPT2Tokenizer
+
 class Template:
     def encode(self, sample):
         """
@@ -1095,7 +1098,6 @@ class LiarTemplateJustified(Template):
         return f"{self.verbalizer[candidate]}"
 
 
-
 class HealthFactsTemplate(Template):
     verbalizer = {0: "False", 1: "True", 2: "Unverified", 3: "Mixture"}
 
@@ -1246,3 +1248,44 @@ class WikiQATemplate(Template):
 
     def verbalize_sfc(self, sample, candidate):
         return f"{self.verbalizer[candidate]}"
+
+
+class DirectMetaICLTemplate(Template):
+    method = "direct"
+
+    def encode(self, sample):
+        text = sample.data["input"]
+        if sample.candidates is not None:
+            text += "\n" + "\n".join(sample.candidates)
+        return f"{text} "
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["input"]
+        if sample.candidates is not None:
+            text += "\n" + "\n".join(sample.candidates)
+        return f"{text}\n\n{candidate}"
+
+    def encode_sfc(self, sample):
+        return f" "
+
+    def verbalize_sfc(self, sample, candidate):
+        return f" {candidate}"
+
+
+class ChannelMetaICLTemplate(Template):
+
+    method = "channel"
+
+    def encode(self, sample):
+        text = sample.data["input"]
+        return f"{text} "
+
+    def verbalize(self, sample, candidate):
+        text = sample.data["input"]
+        return f"{text}\n{candidate}"
+
+    def encode_sfc(self, sample):
+        return f" "
+
+    def verbalize_sfc(self, sample, candidate):
+        return f" {candidate}"

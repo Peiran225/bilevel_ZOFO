@@ -579,6 +579,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                 step_start_time = time.time()
 
                 for task in batch:
+                    torch.cuda.empty_cache()
                     inputs = batch[task]
                     if self.args.lora:
                         self.set_active_lora(model, task)
@@ -724,6 +725,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                         break
 
                     for task in tasks_inputs_f:
+                        torch.cuda.empty_cache()
                         inputs_f = tasks_inputs_f[task]
                         inputs_p = tasks_inputs_p[task]
 
@@ -731,7 +733,10 @@ class BiLevelMinimaxTrainer2(Trainer):
                             self.set_active_lora(model, task)
 
                         self.compute_grad_p(model, inputs_f, inputs_p, task, epoch, ignore_keys_for_eval)
+                        torch.cuda.empty_cache()
                         self.compute_zo_grad_theta(model, inputs_f, inputs_p)
+                        torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()
                     self.bilevel_upper_step(model)
 
                     self.sampled_tasks = np.random.choice(len(self.training_tasks), self.num_tasks_per_iteration,

@@ -162,6 +162,7 @@ scripts/
 results/
 logs/
 errors/
+sweep/
 
 
 # PyCharm

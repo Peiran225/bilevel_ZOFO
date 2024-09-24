@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=bilevel_sweeps
+#SBATCH --job-name=bilevel_sweeps_opt1-3-prefix
 #SBATCH --output=logs/out-%x-%A_%a.log  # A for Job ID, a for Array Task ID
 #SBATCH --error=logs/err-%x-%A_%a.log
 #SBATCH --cpus-per-task=4
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:rtx6000ada:1
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --qos=high
 #SBATCH --mem=64G
 
@@ -17,17 +17,24 @@ conda activate zollm
 
 cd /ihchomes/rezashkv/research/projects/bilevel_ZOFO/ || exit
 # Gather all config files into an array
-config_dir="./sweep/"
+config_dir="./sweep/single_task/opt-1.3"
 config_files=()
 
 for task_dir in $config_dir/*; do
   # if SST2, WIC, WinoGrande, and WSC are not in the task_dir, skip
-  if [[ $task_dir != *"SST2"* ]] && [[ $task_dir != *"WIC"* ]] && [[ $task_dir != *"WinoGrande"* ]] && [[ $task_dir != *"WSC"* ]]; then
-    echo "Skipping $task_dir"
-    continue
-  fi
+#  if [[ $task_dir != *"SST2"* ]] && [[ $task_dir != *"WIC"* ]] && [[ $task_dir != *"WinoGrande"* ]] && [[ $task_dir != *"WSC"* ]]; then
+#    echo "Skipping $task_dir"
+#    continue
+#  fi
+#  if [[ $task_dir != *"SST2"* ]]; then
+#    echo "Skipping $task_dir"
+#    continue
+#  fi
   for trainer_dir in $task_dir/*; do
     for config_file in $trainer_dir/*; do
+      if [[ $config_file != *"prefix"* ]]; then
+        continue
+      fi
       config_files+=($config_file)
     done
   done

@@ -1,3 +1,4 @@
+import json
 import logging
 import sys
 from dataclasses import dataclass
@@ -11,16 +12,29 @@ from .templates import *
 from ..utils import temp_seed
 import os
 
-os.environ["HF_DATASETS_CACHE"] = "/fs/nexus-scratch/peiran/FO_Prompt_tuning_ZO_Fine_tuning/data"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_tasks(task_names):
+def get_tasks(task_names, data_dir=None, meta_k=None, meta_test_k=None, meta_icl_seed=None):
+    instances = []
+    if "meta_icl" in task_names:
+        assert type(task_names) == str
+        meta_icl_task = task_names.split("__")[1]
+        split = task_names.split("__")[2]
+        tasks_py_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(f"{tasks_py_dir}/MetaICL/config/{meta_icl_task}.json") as f:
+            meta_icl_tasks = json.load(f)
+        task_names = meta_icl_tasks[split]
+        instances = []
+        for task_name in task_names:
+            instance = MetaICLDataset(task_name, data_dir=data_dir, meta_k=meta_k, meta_test_k=meta_test_k,
+                                      meta_icl_seed=meta_icl_seed)
+            instances.append(instance)
+        return instances
     if isinstance(task_names, str):
         task_names = [task_names]
-    instances = []
     for task_name in task_names:
         aa = task_name.split("__")
         if len(aa) == 2:
@@ -1120,6 +1134,7 @@ class HateSpeech18Dataset(Dataset):
     def get_template(self, template_version=0):
         return {0: HateSpeech18Template}[template_version]()
 
+
 class KiltFeverDataset(Dataset):
     metric_name = "clf_f1"
 
@@ -1320,3 +1335,59 @@ class WikiQADataset(Dataset):
 
     def get_template(self, template_version=0):
         return {0: WikiQATemplate}[template_version]()
+
+
+class MetaICLDataset(Dataset):
+
+    train_sep = "\n\n\n"
+    metric_name = "clf_f1"
+
+    def __init__(self, subtask=None, **kwargs) -> None:
+        super().__init__(subtask, **kwargs)
+        self.data_dir = kwargs.get("data_dir", None)
+        assert self.data_dir is not None, "data_dir must be provided for MetaICLDataset"
+        self.meta_k = kwargs.get("meta_k", None)
+        assert self.meta_k is not None, "meta_k must be provided for MetaICLDataset"
+        self.meta_test_k = kwargs.get("meta_test_k", 4)
+        self.meta_icl_seed = kwargs.get("meta_icl_seed", 100)
+        self.method = kwargs.get("method", "direct")
+
+        tasks_py_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(f"{tasks_py_dir}/MetaICL/config/tasks/{subtask}.json") as f:
+            d = json.load(f)
+
+        self.generation = d["task_type"] == "free-form"
+
+        self.load_dataset(subtask, **kwargs)
+
+    def load_dataset(self, path, **kwargs):
+        import json
+        dataset_path = os.path.join(self.data_dir, path)
+        train_file_path = os.path.join(dataset_path, f"{path}_{self.meta_k}_{self.meta_icl_seed}_train.jsonl")
+        with open(train_file_path, "r") as f:
+            train_d = [json.loads(line) for line in f.readlines()]
+
+        valid_file_path = os.path.join(dataset_path, f"{path}_{self.meta_k}_{self.meta_icl_seed}_test.jsonl")
+        if os.path.exists(valid_file_path):
+            with open(valid_file_path, "r") as f:
+                validation_d = [json.loads(line) for line in f.readlines()]
+        else:
+            validation_d = []
+        # train_samples = [self.build_sample(example) for example in train_d]
+        # valid_samples = [self.build_sample(example) for example in validation_d]
+
+        self.samples = {"train": train_d, "valid": validation_d}
+
+    def build_sample(self, example):
+        label = example["output"]
+        if "options" in example:
+            candidates = example["options"]
+            if len(candidates) == 0:
+                candidates = None
+        else:
+            candidates = None
+
+        return Sample(id=None, data=example, correct_candidate=label, candidates=candidates)
+
+    def get_template(self, template_version=0):
+        return {0: DirectMetaICLTemplate, 1: ChannelMetaICLTemplate}[template_version]()

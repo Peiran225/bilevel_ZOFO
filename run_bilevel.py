@@ -26,6 +26,12 @@ class OurArguments(TrainingArguments):
     test_tasks: Union[str, list[str]] = "SST2"
     num_tasks_per_iteration: int = 1  # number of tasks to sample in each iteration
 
+    meta_icl_data_dir: str = None  # directory for meta-ICL data
+    meta_icl_train_k: int = None  # number of samples in each meta-ICL sample
+    meta_icl_train_seed: int = None  # seed for meta-ICL sampling
+    meta_icl_test_k: int = None  # number of samples in each meta-ICL sample
+    meta_icl_test_seed: int = None  # seed for meta-ICL sampling
+
     lr_scheduler_type: str = 'constant'
     # Number of examples
     num_train: list[int] = 0  # ICL mode: number of demonstrations; training mode: number of training samples
@@ -214,9 +220,8 @@ def main():
     else:
         args.mode = "ft"
     if "bilevel_minimax" in args.trainer:
-        args.tag = (f"{args.trainer}-train:{args.training_tasks}-test:{args.test_tasks}-{args.template_ver}"
-                    f"-{args.model_name.split('/')[-1]}"
-                    f"-OPTIM_{args.mode}")
+        args.tag = (f"{args.trainer}-train:{args.training_tasks}-test:{args.test_tasks}-"
+                    f"{args.model_name.split('/')[-1]}-{args.mode}-seed{args.seed}")
     else:
         args.tag = (f"{args.trainer}-train:{args.training_tasks}-test:{args.test_tasks}-{args.template_ver}"
                     f"-{args.model_name.split('/')[-1]}-OPTIM_{args.mode}-STEP{args.max_steps}-{args.optimizer}"
@@ -236,8 +241,14 @@ def main():
     w = wandb.init(project="zo_bench", name=args.tag, config=vars(args), dir=args.output_dir)
 
     set_seed(args.seed)
-    training_tasks = get_tasks(args.training_tasks)
-    test_tasks = get_tasks(args.test_tasks)
+    if "meta_icl" in args.training_tasks[0]:
+        args.training_tasks = args.training_tasks[0]
+        args.test_tasks = f"{args.training_tasks}__test"
+        args.training_tasks = f"{args.training_tasks}__train"
+    training_tasks = get_tasks(args.training_tasks, data_dir=args.meta_icl_data_dir, meta_k=args.meta_icl_train_k,
+                               meta_icl_seed=args.meta_icl_train_seed, meta_test_k=args.meta_icl_test_k)
+    test_tasks = get_tasks(args.test_tasks, data_dir=args.meta_icl_data_dir, meta_k=args.meta_icl_test_k,
+                           meta_icl_seed=args.meta_icl_test_seed, meta_test_k=args.meta_icl_test_k)
 
     if len(args.num_train) < len(training_tasks):
         assert len(args.num_train) == 1, "If you want to use the same number of training samples for all tasks, " \
@@ -298,11 +309,15 @@ def main():
 
             tasks_dev_samples = []
             if args.trainer != "none":
-                for i, task in enumerate(args.training_tasks):
+                for i, task in enumerate(training_tasks):
+                    task = str(task)
                     num_dev = args.num_dev[i]
                     if num_dev is not None:
-                        if num_dev > len(tasks_train_samples[i]):
+                        if num_dev > len(tasks_train_samples[i]) or args.num_train[i] > len(tasks_train_samples[i]) or \
+                                args.num_train[i] + num_dev > len(tasks_train_samples[i]):
                             num_dev = len(tasks_train_samples[i]) // 3
+                        # shuffle the training samples
+                        random.shuffle(tasks_train_samples[i])
                         dev_samples = tasks_train_samples[i][-num_dev:]
                         tasks_train_samples[i] = tasks_train_samples[i][:-num_dev]
                         logger.info(f"Task {task} has {len(tasks_train_samples[i])} training samples "
@@ -326,7 +341,8 @@ def main():
                         tasks_metrics = [framework.evaluate(training_tasks[i], [], test_tasks_eval_samples[i],
                                                             description="Evaluating on the Test Set")
                                          for i in range(len(training_tasks))]
-                        for i, task in enumerate(args.training_tasks):
+                        for i, task in enumerate(training_tasks):
+                            task = str(task)
                             metrics = tasks_metrics[i]
                             metrics["task"] = task
                             _keys = list(metrics.keys())

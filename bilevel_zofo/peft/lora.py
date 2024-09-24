@@ -1,6 +1,9 @@
 import logging
 from typing import Union, List
 
+from transformers.pytorch_utils import Conv1D
+from transformers.models.gpt2 import GPT2Model
+
 from torch.nn.modules.module import T
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -110,6 +113,70 @@ class LoRALinear(nn.Linear):
             return F.linear(x, T(self.weight), bias=self.bias)
 
 
+class LoRAConv1D(Conv1D):
+    """
+    LoRA implemented in a Conv1D layer for GPT-style models.
+    """
+
+    def __init__(
+            self,
+            nf,  # number of output features
+            nx,  # number of input features
+            r: int = 0,  # Rank for LoRA
+            lora_alpha: int = 1,
+            lora_dropout: float = 0.,
+            merge_weights: bool = False,
+    ):
+        super().__init__(nf, nx)
+
+        self.r = r
+        self.lora_alpha = lora_alpha
+        self.merged = False
+        self.merge_weights = merge_weights
+
+        if r > 0:
+            # LoRA parameters
+            self.lora_A = nn.Parameter(self.weight.new_zeros((r, nx)))  # A: (r, nx)
+            self.lora_B = nn.Parameter(self.weight.new_zeros((nf, r)))  # B: (nf, r)
+
+            self.scaling = self.lora_alpha / self.r
+            self.weight.requires_grad = False
+
+            if lora_dropout > 0.:
+                self.lora_dropout = nn.Dropout(p=lora_dropout)
+            else:
+                self.lora_dropout = lambda x: x
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.normal_(self.weight, std=0.02)
+        if hasattr(self, 'lora_A'):
+            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_B)
+
+    def train(self, mode: bool = True):
+        Conv1D.train(self, mode)
+        if mode:
+            if self.merge_weights and self.merged:
+                if self.r > 0:
+                    self.weight.data -= (self.lora_B @ self.lora_A).view_as(self.weight) * self.scaling
+                self.merged = False
+        else:
+            if self.merge_weights and not self.merged:
+                if self.r > 0:
+                    self.weight.data += (self.lora_B @ self.lora_A).view_as(self.weight) * self.scaling
+                self.merged = True
+
+    def forward(self, x: torch.Tensor):
+        if self.r > 0 and not self.merged:
+            result = super().forward(x)
+            result += (self.lora_dropout(x) @ self.lora_A.t() @ self.lora_B.t()) * self.scaling
+            return result
+        else:
+            return super().forward(x)
+
+
 class BilevelLoRALinear(nn.Linear):
     """
     Bilevel LoRA implemented in a dense layer
@@ -212,6 +279,101 @@ class BilevelLoRALinear(nn.Linear):
                     p.requires_grad = True
         else:
             # set the all parameters of the lower level to be not requires_grad
+            for n, p in self.named_parameters():
+                if "lower_level_model" in n:
+                    p.requires_grad = False
+                if "upper_level_model" in n:
+                    p.requires_grad = True
+
+
+class BilevelLoRAConv1D(Conv1D):
+    """
+    Bilevel LoRA implemented in a Conv1D layer for GPT-style models.
+    """
+
+    def __init__(
+            self,
+            nf,  # number of output features
+            nx,  # number of input features
+            r: int = 0,  # Rank for LoRA
+            lora_alpha: int = 1,
+            lora_dropout: float = 0.,
+            merge_weights: bool = False,
+    ):
+        super().__init__(nf, nx)
+
+        self.r = r
+        self.lora_alpha = lora_alpha
+        self.merged = False
+        self.merge_weights = merge_weights
+
+        if r > 0:
+            # LoRA parameters for lower level model
+            self.lower_level_model_lora_A = nn.Parameter(self.weight.new_zeros((r, nx)))  # A: (r, nx)
+            self.lower_level_model_lora_B = nn.Parameter(self.weight.new_zeros((nf, r)))  # B: (nf, r)
+
+            # LoRA parameters for upper level model
+            self.upper_level_model_lora_A = nn.Parameter(self.weight.new_zeros((r, nx)))  # A: (r, nx)
+            self.upper_level_model_lora_B = nn.Parameter(self.weight.new_zeros((nf, r)))  # B: (nf, r)
+
+            self.active_level = BILEVEL_ACTIVE_LEVEL.LOWER
+
+            self.scaling = self.lora_alpha / self.r
+            self.weight.requires_grad = False
+
+            if lora_dropout > 0.:
+                self.lora_dropout = nn.Dropout(p=lora_dropout)
+            else:
+                self.lora_dropout = lambda x: x
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.normal_(self.weight, std=0.02)
+        if hasattr(self, 'lower_level_model_lora_A'):
+            nn.init.kaiming_uniform_(self.lower_level_model_lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.lower_level_model_lora_B)
+
+            nn.init.kaiming_uniform_(self.upper_level_model_lora_A, a=math.sqrt(5))
+            nn.init.zeros_(self.upper_level_model_lora_B)
+
+    def train(self, mode: bool = True):
+        Conv1D.train(self, mode)
+        if mode:
+            if self.merge_weights and self.merged:
+                if self.r > 0:
+                    self.weight.data -= (self.lower_level_model_lora_B @ self.lower_level_model_lora_A).view_as(
+                        self.weight) * self.scaling
+                self.merged = False
+        else:
+            if self.merge_weights and not self.merged:
+                if self.r > 0:
+                    self.weight.data += (self.lower_level_model_lora_B @ self.lower_level_model_lora_A).view_as(
+                        self.weight) * self.scaling
+                self.merged = True
+
+    def forward(self, x: torch.Tensor):
+        if self.r > 0 and not self.merged:
+            result = super().forward(x)
+            if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                result += (self.lora_dropout(
+                    x) @ self.lower_level_model_lora_A.t() @ self.lower_level_model_lora_B.t()) * self.scaling
+            else:
+                result += (self.lora_dropout(
+                    x) @ self.upper_level_model_lora_A.t() @ self.upper_level_model_lora_B.t()) * self.scaling
+            return result
+        else:
+            return super().forward(x)
+
+    def set_bilevel_active_level(self, active_level):
+        self.active_level = active_level
+        if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+            for n, p in self.named_parameters():
+                if "upper_level_model" in n:
+                    p.requires_grad = False
+                if "lower_level_model" in n:
+                    p.requires_grad = True
+        else:
             for n, p in self.named_parameters():
                 if "lower_level_model" in n:
                     p.requires_grad = False
@@ -342,6 +504,113 @@ class MultiTaskLoRALinear(nn.Linear):
             return result
         else:
             return F.linear(x, T(self.weight), bias=self.bias)
+
+
+class MultiTaskLoRAConv1D(Conv1D):
+    """
+    Multi-task LoRA implemented in a Conv1D layer for GPT-style models.
+    """
+
+    def __init__(
+            self,
+            tasks,
+            nf,  # number of output features
+            nx,  # number of input features
+            lora_ranks: Union[int, List[int]] = 0,
+            lora_alphas: Union[int, List[int]] = 1,
+            lora_dropouts: Union[float, List[float]] = 0.,
+            merge_weights: bool = False,
+            **kwargs
+    ):
+        super().__init__(nf, nx)  # Match Conv1D initialization
+
+        tasks = [str(task) for task in tasks]
+        self.tasks = tasks
+
+        if isinstance(lora_ranks, int):
+            lora_ranks = [lora_ranks] * len(tasks)
+        if isinstance(lora_alphas, int):
+            lora_alphas = [lora_alphas] * len(tasks)
+        if isinstance(lora_dropouts, float):
+            lora_dropouts = [lora_dropouts] * len(tasks)
+
+        self.lora_ranks = {task: r for task, r in zip(tasks, lora_ranks)}
+        self.lora_dropouts = nn.ModuleDict()
+
+        # Optional dropout
+        for task, lora_dropout in zip(tasks, lora_dropouts):
+            if lora_dropout > 0.:
+                self.lora_dropouts[task] = nn.Dropout(p=lora_dropout)
+            else:
+                self.lora_dropouts[task] = nn.Identity()
+
+        # Mark the weight as unmerged
+        self.merged = False
+        self.merge_weights = merge_weights
+
+        # Trainable LoRA parameters
+        self.lora_A = nn.ParameterDict()
+        self.lora_B = nn.ParameterDict()
+        self.scaling = dict()
+
+        for i, (r, lora_alpha) in enumerate(zip(lora_ranks, lora_alphas)):
+            task = self.tasks[i]
+            if r > 0:
+                self.lora_A[task] = nn.Parameter(self.weight.new_zeros((r, nx)))  # A: (r, in_features)
+                self.lora_B[task] = nn.Parameter(self.weight.new_zeros((nf, r)))  # B: (out_features, r)
+                self.scaling[task] = lora_alpha / r
+                # Freeze the pre-trained weight matrix
+                self.weight.requires_grad = False
+
+        self.reset_parameters()
+
+        self.active_lora = self.tasks[0]
+        self.set_active_lora(self.tasks[0])
+
+    def set_active_lora(self, task):
+        self.active_lora = task
+        if self.lora_ranks[task] > 0:
+            self.lora_A[task].requires_grad = True
+            self.lora_B[task].requires_grad = True
+        # Set other LoRA parameters to non-trainable
+        for t in self.tasks:
+            if t != task:
+                if self.lora_ranks[t] > 0:
+                    self.lora_A[t].requires_grad = False
+                    self.lora_B[t].requires_grad = False
+
+    def reset_parameters(self):
+        super().reset_parameters()
+        if hasattr(self, 'lora_A'):
+            # Initialize A and B matrices
+            for task in self.tasks:
+                self.lora_A[str(task)].data = nn.init.kaiming_uniform_(self.lora_A[str(task)], a=math.sqrt(5))
+                self.lora_B[str(task)].data = nn.init.zeros_(self.lora_B[str(task)])
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if mode:
+            if self.merge_weights and self.merged:
+                if self.lora_ranks[self.active_lora] > 0:
+                    self.weight.data -= (self.lora_B[self.active_lora] @ self.lora_A[self.active_lora]).view_as(
+                        self.weight) * self.scaling[self.active_lora]
+                self.merged = False
+        else:
+            if self.merge_weights and not self.merged:
+                if self.lora_ranks[self.active_lora] > 0:
+                    self.weight.data += (self.lora_B[self.active_lora] @ self.lora_A[self.active_lora]).view_as(
+                        self.weight) * self.scaling[self.active_lora]
+                self.merged = True
+
+    def forward(self, x: torch.Tensor):
+        if self.lora_ranks[self.active_lora] > 0 and not self.merged:
+            result = super().forward(x)
+            if self.lora_ranks[self.active_lora]:
+                result += (self.lora_dropouts[self.active_lora](x) @ self.lora_A[self.active_lora].t() @
+                           self.lora_B[self.active_lora].t()) * self.scaling[self.active_lora]
+            return result
+        else:
+            return super().forward(x)
 
 
 class MultiTaskBilevelLoRALinear(nn.Linear):
@@ -532,6 +801,169 @@ class MultiTaskBilevelLoRALinear(nn.Linear):
                 self.lower_level_model_lora_B[task].requires_grad = False
 
 
+class MultiTaskBilevelLoRAConv1D(Conv1D):
+    """
+    LoRA implemented in a Conv1D layer with bilevel support.
+    """
+
+    def __init__(
+            self,
+            tasks,
+            nf,  # number of output features
+            nx,  # number of input features
+            lora_ranks: Union[int, List[int]] = 0,
+            lora_alphas: Union[int, List[int]] = 1,
+            lora_dropouts: Union[float, List[float]] = 0.,
+            merge_weights: bool = False,
+            **kwargs
+    ):
+        super().__init__(nf, nx)  # Match Conv1D initialization
+        tasks = [str(task) for task in tasks]
+        self.tasks = tasks
+
+        if isinstance(lora_ranks, int):
+            lora_ranks = [lora_ranks] * len(tasks)
+        if isinstance(lora_alphas, int):
+            lora_alphas = [lora_alphas] * len(tasks)
+        if isinstance(lora_dropouts, float):
+            lora_dropouts = [lora_dropouts] * len(tasks)
+
+        self.lora_ranks = {task: r for task, r in zip(tasks, lora_ranks)}
+        self.lora_dropouts = nn.ModuleDict()
+
+        # Optional dropout
+        for task, lora_dropout in zip(tasks, lora_dropouts):
+            if lora_dropout > 0.:
+                self.lora_dropouts[task] = nn.Dropout(p=lora_dropout)
+            else:
+                self.lora_dropouts[task] = nn.Identity()
+
+        # Mark the weight as unmerged
+        self.merged = False
+        self.merge_weights = merge_weights
+
+        # Actual trainable parameters
+        self.lower_level_model_lora_A = nn.ParameterDict()
+        self.lower_level_model_lora_B = nn.ParameterDict()
+
+        self.upper_level_model_lora_A = nn.ParameterDict()
+        self.upper_level_model_lora_B = nn.ParameterDict()
+
+        self.scaling = dict()
+        for i, (r, lora_alpha) in enumerate(zip(lora_ranks, lora_alphas)):
+            task = self.tasks[i]
+            if r > 0:
+                self.lower_level_model_lora_A[task] = nn.Parameter(self.weight.new_zeros((r, nx)))
+                self.lower_level_model_lora_B[task] = nn.Parameter(self.weight.new_zeros((nf, r)))
+
+                self.upper_level_model_lora_A[task] = nn.Parameter(self.weight.new_zeros((r, nx)))
+                self.upper_level_model_lora_B[task] = nn.Parameter(self.weight.new_zeros((nf, r)))
+
+                self.scaling[task] = lora_alpha / r
+                self.weight.requires_grad = False
+
+                self.active_level = BILEVEL_ACTIVE_LEVEL.LOWER
+
+        self.reset_parameters()
+        self.active_lora = self.tasks[0]
+        self.set_active_lora(self.tasks[0])
+
+    def set_active_lora(self, task):
+        self.active_lora = task
+        if self.lora_ranks[task] > 0:
+            if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                self.lower_level_model_lora_A[task].requires_grad = True
+                self.lower_level_model_lora_B[task].requires_grad = True
+
+                self.upper_level_model_lora_A[task].requires_grad = False
+                self.upper_level_model_lora_B[task].requires_grad = False
+            else:
+                self.upper_level_model_lora_A[task].requires_grad = True
+                self.upper_level_model_lora_B[task].requires_grad = True
+
+                self.lower_level_model_lora_A[task].requires_grad = False
+                self.lower_level_model_lora_B[task].requires_grad = False
+
+        for t in self.tasks:
+            if t != task:
+                if self.lora_ranks[t] > 0:
+                    self.lower_level_model_lora_A[t].requires_grad = False
+                    self.lower_level_model_lora_B[t].requires_grad = False
+                    self.upper_level_model_lora_A[t].requires_grad = False
+                    self.upper_level_model_lora_B[t].requires_grad = False
+
+    def reset_parameters(self):
+        nn.init.normal_(self.weight, std=0.02)
+        if hasattr(self, 'lower_level_model_lora_A'):
+            for task in self.tasks:
+                self.lower_level_model_lora_A[str(task)].data = nn.init.kaiming_uniform_(
+                    self.lower_level_model_lora_A[str(task)], a=math.sqrt(5))
+                self.lower_level_model_lora_B[str(task)].data = nn.init.zeros_(self.lower_level_model_lora_B[str(task)])
+
+                self.upper_level_model_lora_A[str(task)].data = nn.init.kaiming_uniform_(
+                    self.upper_level_model_lora_A[str(task)], a=math.sqrt(5))
+                self.upper_level_model_lora_B[str(task)].data = nn.init.zeros_(self.upper_level_model_lora_B[str(task)])
+
+    def train(self, mode: bool = True):
+        Conv1D.train(self, mode)
+        if mode:
+            if self.merge_weights and self.merged:
+                if self.lora_ranks[self.active_lora] > 0:
+                    if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                        self.weight.data -= (self.lower_level_model_lora_B[self.active_lora] @
+                                             self.lower_level_model_lora_A[self.active_lora]) * self.scaling[
+                                                self.active_lora]
+                    else:
+                        self.weight.data -= (self.upper_level_model_lora_B[self.active_lora] @
+                                             self.upper_level_model_lora_A[self.active_lora]) * self.scaling[
+                                                self.active_lora]
+                self.merged = False
+        else:
+            if self.merge_weights and not self.merged:
+                if self.lora_ranks[self.active_lora] > 0:
+                    if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                        self.weight.data += (self.lower_level_model_lora_B[self.active_lora] @
+                                             self.lower_level_model_lora_A[self.active_lora]) * self.scaling[
+                                                self.active_lora]
+                    else:
+                        self.weight.data += (self.upper_level_model_lora_B[self.active_lora] @
+                                             self.upper_level_model_lora_A[self.active_lora]) * self.scaling[
+                                                self.active_lora]
+                self.merged = True
+
+    def forward(self, x: torch.Tensor):
+        if self.lora_ranks[self.active_lora] > 0 and not self.merged:
+            result = super().forward(x)
+            if self.lora_ranks[self.active_lora]:
+                if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                    result += (self.lora_dropouts[self.active_lora](x) @
+                               self.lower_level_model_lora_A[self.active_lora].t() @
+                               self.lower_level_model_lora_B[self.active_lora].t()) * self.scaling[self.active_lora]
+                else:
+                    result += (self.lora_dropouts[self.active_lora](x) @
+                               self.upper_level_model_lora_A[self.active_lora].t() @
+                               self.upper_level_model_lora_B[self.active_lora].t()) * self.scaling[self.active_lora]
+            return result
+        else:
+            return super().forward(x)
+
+    def set_bilevel_active_level(self, active_level):
+        self.active_level = active_level
+        for task in self.tasks:
+            if self.active_level == BILEVEL_ACTIVE_LEVEL.LOWER:
+                self.lower_level_model_lora_A[task].requires_grad = True
+                self.lower_level_model_lora_B[task].requires_grad = True
+
+                self.upper_level_model_lora_A[task].requires_grad = False
+                self.upper_level_model_lora_B[task].requires_grad = False
+            else:
+                self.upper_level_model_lora_A[task].requires_grad = True
+                self.upper_level_model_lora_B[task].requires_grad = True
+
+                self.lower_level_model_lora_A[task].requires_grad = False
+                self.lower_level_model_lora_B[task].requires_grad = False
+
+
 class LoRA:
 
     def __init__(self, model, r, alpha, float16, tasks=None):
@@ -550,6 +982,8 @@ class LoRA:
             attention_name = "attention"
         elif model.config.model_type in ["llama", "mistral"]:
             attention_name = "self_attn"
+        elif model.config.model_type == "gpt2":
+            attention_name = "attn"
         else:
             raise NotImplementedError
 
@@ -664,6 +1098,30 @@ class LoRA:
                         attn.v_proj.half()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
+                elif model.config.model_type == "gpt2":
+                    original_c_attn_weight = attn.c_attn.weight.data
+                    original_c_attn_bias = attn.c_attn.bias.data
+                    original_c_proj_weight = attn.c_proj.weight.data
+                    original_c_prof_bias = attn.c_proj.bias.data
+                    if tasks is None:
+                        attn.c_attn = LoRAConv1D(model.config.hidden_size * 3, model.config.hidden_size, r=r,
+                                                        lora_alpha=alpha, ).to(original_c_attn_weight.device)
+                        attn.c_proj = LoRAConv1D(model.config.hidden_size, model.config.hidden_size, r=r,
+                                                        lora_alpha=alpha).to(original_c_proj_weight.device)
+                    else:
+                        attn.c_attn = MultiTaskLoRAConv1D(tasks, model.config.hidden_size * 3,
+                                                                 model.config.hidden_size, lora_ranks=r,
+                                                                 lora_alphas=alpha).to(original_c_attn_weight.device)
+                        attn.c_proj = MultiTaskLoRAConv1D(tasks, model.config.hidden_size,
+                                                                 model.config.hidden_size, lora_ranks=r,
+                                                                 lora_alphas=alpha).to(original_c_proj_weight.device)
+                    if float16:
+                        attn.c_attn.half()
+                        attn.c_proj.half()
+                    attn.c_attn.weight.data = original_c_attn_weight
+                    attn.c_attn.bias.data = original_c_attn_bias
+                    attn.c_proj.weight.data = original_c_proj_weight
+                    attn.c_proj.bias.data = original_c_prof_bias
                 else:
                     raise NotImplementedError
 
@@ -675,7 +1133,7 @@ class LoRA:
     def remove_loras(self, model):
 
         for key, _ in model.named_modules():
-            if key[-len(self.attention_name):] == self.attention_name:
+            if key[-len(self.attention_name):] == self.attention_name and "c_attn" not in key:
                 logger.info(f"Removing lora from: {key}")
                 _, _, attn = find_module(model, key)
 
@@ -727,6 +1185,20 @@ class LoRA:
                         attn.v_proj.half()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
+                elif model.config.model_type == "gpt2":
+                    original_c_attn_weight = attn.c_attn.weight.data
+                    original_c_attn_bias = attn.c_attn.bias.data
+                    original_c_proj_weight = attn.c_proj.weight.data
+                    original_c_prof_bias = attn.c_proj.bias.data
+                    attn.c_attn = Conv1D(model.config.hidden_size * 3, model.config.hidden_size).to(original_c_attn_weight.device)
+                    attn.c_proj = Conv1D(model.config.hidden_size, model.config.hidden_size).to(original_c_proj_weight.device)
+                    if self.float16:
+                        attn.c_attn.half()
+                        attn.c_proj.half()
+                    attn.c_attn.weight.data = original_c_attn_weight
+                    attn.c_attn.bias.data = original_c_attn_bias
+                    attn.c_proj.weight.data = original_c_proj_weight
+                    attn.c_proj.bias.data = original_c_prof_bias
                 else:
                     raise NotImplementedError
 
@@ -750,6 +1222,8 @@ class BilevelLoRA:
             attention_name = "attention"
         elif model.config.model_type in ["llama", "mistral"]:
             attention_name = "self_attn"
+        elif model.config.model_type == "gpt2":
+            attention_name = "attn"
         else:
             raise NotImplementedError
 
@@ -757,7 +1231,7 @@ class BilevelLoRA:
 
         # Insert LoRA
         for key, _ in model.named_modules():
-            if key[-len(attention_name):] == attention_name:
+            if key[-len(attention_name):] == attention_name and "c_attn" not in key:
                 logger.info(f"Inject lora to: {key}")
                 _, _, attn = find_module(model, key)
 
@@ -866,6 +1340,30 @@ class BilevelLoRA:
                         attn.v_proj.half()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
+                elif model.config.model_type == "gpt2":
+                    original_c_attn_weight = attn.c_attn.weight.data
+                    original_c_attn_bias = attn.c_attn.bias.data
+                    original_c_proj_weight = attn.c_proj.weight.data
+                    original_c_prof_bias = attn.c_proj.bias.data
+                    if tasks is None:
+                        attn.c_attn = BilevelLoRAConv1D(model.config.hidden_size * 3, model.config.hidden_size, r=r,
+                                                        lora_alpha=alpha, ).to(original_c_attn_weight.device)
+                        attn.c_proj = BilevelLoRAConv1D(model.config.hidden_size, model.config.hidden_size, r=r,
+                                                        lora_alpha=alpha).to(original_c_proj_weight.device)
+                    else:
+                        attn.c_attn = MultiTaskBilevelLoRAConv1D(tasks, model.config.hidden_size * 3,
+                                                                 model.config.hidden_size, lora_ranks=r,
+                                                                 lora_alphas=alpha).to(original_c_attn_weight.device)
+                        attn.c_proj = MultiTaskBilevelLoRAConv1D(tasks, model.config.hidden_size,
+                                                                 model.config.hidden_size, lora_ranks=r,
+                                                                 lora_alphas=alpha).to(original_c_proj_weight.device)
+                    if float16:
+                        attn.c_attn.half()
+                        attn.c_proj.half()
+                    attn.c_attn.weight.data = original_c_attn_weight
+                    attn.c_attn.bias.data = original_c_attn_bias
+                    attn.c_proj.weight.data = original_c_proj_weight
+                    attn.c_proj.bias.data = original_c_prof_bias
                 else:
                     raise NotImplementedError
 
@@ -928,6 +1426,20 @@ class BilevelLoRA:
                         attn.v_proj.half()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
+                elif model.config.model_type == "gpt2":
+                    original_c_attn_weight = attn.c_attn.weight.data
+                    original_c_attn_bias = attn.c_attn.bias.data
+                    original_c_proj_weight = attn.c_proj.weight.data
+                    original_c_prof_bias = attn.c_proj.bias.data
+                    attn.c_attn = Conv1D(self.hidden_dim * 3, self.hidden_dim).to(original_c_attn_weight.device)
+                    attn.c_proj = Conv1D(self.hidden_dim, self.hidden_dim).to(original_c_proj_weight.device)
+                    if self.float16:
+                        attn.c_attn.half()
+                        attn.c_proj.half()
+                    attn.c_attn.weight.data = original_c_attn_weight
+                    attn.c_attn.bias.data = original_c_attn_bias
+                    attn.c_proj.weight.data = original_c_proj_weight
+                    attn.c_proj.bias.data = original_c_prof_bias
                 else:
                     raise NotImplementedError
 

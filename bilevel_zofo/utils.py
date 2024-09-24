@@ -15,10 +15,10 @@ from torch.nn import CrossEntropyLoss
 from transformers.data.data_collator import DataCollatorMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.utils import PaddingStrategy
-
-InputDataClass = NewType("InputDataClass", Any)
 from dataclasses import dataclass
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+InputDataClass = NewType("InputDataClass", Any)
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def forward_wrap_with_option_len(
 
 
 def encode_prompt(task, template, train_samples, eval_sample, tokenizer, max_length, sfc=False, icl_sfc=False,
-                  generation=False, generation_with_gold=False, max_new_tokens=None):
+                  generation=False, generation_with_gold=False, max_new_tokens=None, verbose=False):
     """
     Encode prompts for eval_sample
     Input: 
@@ -181,7 +181,7 @@ def encode_prompt(task, template, train_samples, eval_sample, tokenizer, max_len
     if generation and max_new_tokens is not None:
         max_length = max_length - max_new_tokens
 
-    if any([len(encoding) > max_length for encoding in encodings]):
+    if verbose and any([len(encoding) > max_length for encoding in encodings]):
         logger.warn(f"{task} Exceed max length")
     if hasattr(tokenizer, 'add_bos_token') and tokenizer.add_bos_token:
         encodings = [encoding[0:1] + encoding[1:][-(max_length - 1):] for encoding in encodings]
