@@ -141,11 +141,12 @@ class Framework:
             if "bilevel_minimax" in self.args.trainer:
                 from .peft.lora import BilevelLoRA
                 self.lora = BilevelLoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha,
-                                        float16=self.args.load_float16,
+                                        bfloat16=self.args.load_bfloat16,
                                         tasks=self.training_tasks)
             else:
                 from .peft.lora import LoRA
-                self.lora = LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha, float16=self.args.load_float16,
+                self.lora = LoRA(model, r=self.args.lora_r, alpha=self.args.lora_alpha,
+                                 bfloat16=self.args.load_bfloat16,
                                  tasks=self.training_tasks)
 
         if self.args.prompt_tuning:
@@ -353,6 +354,9 @@ class Framework:
 
         # Calculate metrics
         metric_name = getattr(task, "metric_name", "accuracy")
+        if len(predictions) == 0:
+            logger.warning("No predictions")
+            return {metric_name: None}
         metrics = {metric_name: calculate_metric(predictions, metric_name)}
         return metrics
 
@@ -385,7 +389,7 @@ class Framework:
                 encoded_candidates, option_lens = encode_prompt(task,
                                                                 task.get_template(
                                                                     template_version=self.args.template_ver),
-                                                                [] if sample.demo_samples is None else sample.demo_samples,
+                                                                [],
                                                                 sample,
                                                                 self.tokenizer, max_length=self.args.max_length,
                                                                 generation=task.generation,
@@ -463,18 +467,21 @@ class Framework:
                     if "task" in dp:
                         if (dp["task"].startswith("inst:piqa") or dp["task"].startswith(
                                 "inst:yahoo_answers_topics")) and \
-                                len(input_tokens) + len(output_tokens) + 2 > self.max_length_per_example:
-                            input_tokens = input_tokens[:self.max_length_per_example // 2]
-                            output_tokens = output_tokens[:self.max_length_per_example // 2 - 2]
+                                len(input_tokens) + len(output_tokens) + 2 > self.meta_icl_max_length_per_example:
+                            input_tokens = input_tokens[:self.meta_icl_max_length_per_example // 2]
+                            output_tokens = output_tokens[:self.meta_icl_max_length_per_example // 2 - 2]
 
-                        elif len(input_tokens) >= self.max_length_per_example - 2 - len(output_tokens):
+                        elif len(input_tokens) >= self.meta_icl_max_length_per_example - 2 - len(output_tokens):
                             if dp["task"].startswith("inst:") and len(input_tokens) < len(output_tokens):
-                                output_tokens = output_tokens[:self.max_length_per_example - 2 - len(input_tokens)]
+                                output_tokens = output_tokens[
+                                                :self.meta_icl_max_length_per_example - 2 - len(input_tokens)]
                             else:
-                                input_tokens = input_tokens[:self.max_length_per_example - 2 - len(output_tokens)]
+                                input_tokens = input_tokens[
+                                               :self.meta_icl_max_length_per_example - 2 - len(output_tokens)]
 
-                    assert len(input_tokens) + len(output_tokens) + 2 <= self.max_length_per_example, \
-                        (dp.get("task", None), len(input_tokens), len(output_tokens), self.max_length_per_example)
+                    assert len(input_tokens) + len(output_tokens) + 2 <= self.meta_icl_max_length_per_example, \
+                        (dp.get("task", None), len(input_tokens), len(output_tokens),
+                         self.meta_icl_max_length_per_example)
 
                     if task.method == "direct":
                         return input_tokens, output_tokens
@@ -482,10 +489,6 @@ class Framework:
                         return output_tokens, input_tokens
                     else:
                         raise NotImplementedError()
-
-            for dp in samples:
-                assert isinstance(dp, dict), ("Training example should be a dictionary", dp)
-                assert "input" in dp and "output" in dp, ("Training example should contain input and output", dp)
 
             # each datapoint: passage, question, options, output
             bos_token_id = self.tokenizer.bos_token_id
@@ -517,9 +520,9 @@ class Framework:
 
                 n_mask = max_length - len(ids1) - len(ids2)
                 assert n_mask >= 0, (max_length, len(ids1), len(ids2))
-                input_ids = ids1 + ids2 + [0 for _ in range(n_mask)]
-                attention_mask = [1 for _ in ids1 + ids2] + [0 for _ in range(n_mask)]
-                token_type_ids = [0 for _ in ids1] + [1 for _ in ids2] + [0 for _ in range(n_mask)]
+                input_ids = ids1 + ids2
+                attention_mask = [1 for _ in ids1 + ids2]
+                token_type_ids = [0 for _ in ids1] + [1 for _ in ids2]
                 return input_ids, attention_mask, token_type_ids
 
             def _draw_random(tot, n, exclude_indices):
@@ -547,11 +550,12 @@ class Framework:
 
                     data.append({"input_ids": encoded[0],
                                  "attention_mask": encoded[1],
-                                 "token_type_ids": encoded[2]})
+                                 "token_type_ids": encoded[2],
+                                 "labels": encoded[0]})
 
             return data
 
-        convert_fn = _convert_meta_icl() if "meta_icl" in self.args.training_tasks else _convert
+        convert_fn = _convert_meta_icl if ("meta_icl" in self.args.training_tasks and self.args.meta_icl_few_shot)else _convert
         with count_time("Preparing training samples"):
 
             train_datasets = [HFDataset(convert_fn(train_samples, self.training_tasks[i])) for i, train_samples in

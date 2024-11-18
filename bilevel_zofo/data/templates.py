@@ -1256,14 +1256,14 @@ class DirectMetaICLTemplate(Template):
     def encode(self, sample):
         text = sample.data["input"]
         if sample.candidates is not None:
-            text += "\n" + "\n".join(sample.candidates)
+            text += "\n" + ", ".join(sample.candidates)
         return f"{text} "
 
     def verbalize(self, sample, candidate):
         text = sample.data["input"]
         if sample.candidates is not None:
-            text += "\n" + "\n".join(sample.candidates)
-        return f"{text}\n\n{candidate}"
+            text += "\n" + ", ".join(sample.candidates)
+        return f"{text}\n{candidate}"
 
     def encode_sfc(self, sample):
         return f" "

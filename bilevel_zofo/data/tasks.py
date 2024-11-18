@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-def get_tasks(task_names, data_dir=None, meta_k=None, meta_test_k=None, meta_icl_seed=None):
+def get_tasks(task_names, data_dir=None, meta_k=None, meta_test_k=None, meta_icl_seed=None, build_samples=True):
     instances = []
     if "meta_icl" in task_names:
         assert type(task_names) == str
@@ -30,7 +30,7 @@ def get_tasks(task_names, data_dir=None, meta_k=None, meta_test_k=None, meta_icl
         instances = []
         for task_name in task_names:
             instance = MetaICLDataset(task_name, data_dir=data_dir, meta_k=meta_k, meta_test_k=meta_test_k,
-                                      meta_icl_seed=meta_icl_seed)
+                                      meta_icl_seed=meta_icl_seed, build_samples=build_samples)
             instances.append(instance)
         return instances
     if isinstance(task_names, str):
@@ -1362,6 +1362,7 @@ class MetaICLDataset(Dataset):
 
     def load_dataset(self, path, **kwargs):
         import json
+        build_samples = kwargs.get("build_samples", False)
         dataset_path = os.path.join(self.data_dir, path)
         train_file_path = os.path.join(dataset_path, f"{path}_{self.meta_k}_{self.meta_icl_seed}_train.jsonl")
         with open(train_file_path, "r") as f:
@@ -1373,10 +1374,12 @@ class MetaICLDataset(Dataset):
                 validation_d = [json.loads(line) for line in f.readlines()]
         else:
             validation_d = []
-        # train_samples = [self.build_sample(example) for example in train_d]
-        # valid_samples = [self.build_sample(example) for example in validation_d]
+        if build_samples:
+            train_d = [self.build_sample(example) for example in train_d]
+            validation_d = [self.build_sample(example) for example in validation_d]
 
         self.samples = {"train": train_d, "valid": validation_d}
+
 
     def build_sample(self, example):
         label = example["output"]

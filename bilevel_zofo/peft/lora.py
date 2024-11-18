@@ -112,6 +112,11 @@ class LoRALinear(nn.Linear):
         else:
             return F.linear(x, T(self.weight), bias=self.bias)
 
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        self.lora_A = self.lora_A.bfloat16()
+        self.lora_B = self.lora_B.bfloat16()
+        return self
 
 class LoRAConv1D(Conv1D):
     """
@@ -176,7 +181,11 @@ class LoRAConv1D(Conv1D):
         else:
             return super().forward(x)
 
-
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        self.lora_A = self.lora_A.bfloat16()
+        self.lora_B = self.lora_B.bfloat16()
+        return self
 class BilevelLoRALinear(nn.Linear):
     """
     Bilevel LoRA implemented in a dense layer
@@ -285,7 +294,13 @@ class BilevelLoRALinear(nn.Linear):
                 if "upper_level_model" in n:
                     p.requires_grad = True
 
-
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        self.lower_level_model_lora_A = self.lower_level_model_lora_A.bfloat16()
+        self.lower_level_model_lora_B = self.lower_level_model_lora_B.bfloat16()
+        self.upper_level_model_lora_A = self.upper_level_model_lora_A.bfloat16()
+        self.upper_level_model_lora_B = self.upper_level_model_lora_B.bfloat16()
+        return self
 class BilevelLoRAConv1D(Conv1D):
     """
     Bilevel LoRA implemented in a Conv1D layer for GPT-style models.
@@ -380,6 +395,13 @@ class BilevelLoRAConv1D(Conv1D):
                 if "upper_level_model" in n:
                     p.requires_grad = True
 
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        self.lower_level_model_lora_A = self.lower_level_model_lora_A.bfloat16()
+        self.lower_level_model_lora_B = self.lower_level_model_lora_B.bfloat16()
+        self.upper_level_model_lora_A = self.upper_level_model_lora_A.bfloat16()
+        self.upper_level_model_lora_B = self.upper_level_model_lora_B.bfloat16()
+        return self
 
 class MultiTaskLoRALinear(nn.Linear):
     """
@@ -505,6 +527,12 @@ class MultiTaskLoRALinear(nn.Linear):
         else:
             return F.linear(x, T(self.weight), bias=self.bias)
 
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        for task in self.tasks:
+            self.lora_A[task] = self.lora_A[task].bfloat16()
+            self.lora_B[task] = self.lora_B[task].bfloat16()
+        return self
 
 class MultiTaskLoRAConv1D(Conv1D):
     """
@@ -612,6 +640,12 @@ class MultiTaskLoRAConv1D(Conv1D):
         else:
             return super().forward(x)
 
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        for task in self.tasks:
+            self.lora_A[task] = self.lora_A[task].bfloat16()
+            self.lora_B[task] = self.lora_B[task].bfloat16()
+        return self
 
 class MultiTaskBilevelLoRALinear(nn.Linear):
     """
@@ -800,7 +834,14 @@ class MultiTaskBilevelLoRALinear(nn.Linear):
                 self.lower_level_model_lora_A[task].requires_grad = False
                 self.lower_level_model_lora_B[task].requires_grad = False
 
-
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        for task in self.tasks:
+            self.lower_level_model_lora_A[task] = self.lower_level_model_lora_A[task].bfloat16()
+            self.lower_level_model_lora_B[task] = self.lower_level_model_lora_B[task].bfloat16()
+            self.upper_level_model_lora_A[task] = self.upper_level_model_lora_A[task].bfloat16()
+            self.upper_level_model_lora_B[task] = self.upper_level_model_lora_B[task].bfloat16()
+        return self
 class MultiTaskBilevelLoRAConv1D(Conv1D):
     """
     LoRA implemented in a Conv1D layer with bilevel support.
@@ -963,10 +1004,18 @@ class MultiTaskBilevelLoRAConv1D(Conv1D):
                 self.lower_level_model_lora_A[task].requires_grad = False
                 self.lower_level_model_lora_B[task].requires_grad = False
 
+    def bfloat16(self: T) -> T:
+        super().bfloat16()
+        for task in self.tasks:
+            self.lower_level_model_lora_A[task] = self.lower_level_model_lora_A[task].bfloat16()
+            self.lower_level_model_lora_B[task] = self.lower_level_model_lora_B[task].bfloat16()
+            self.upper_level_model_lora_A[task] = self.upper_level_model_lora_A[task].bfloat16()
+            self.upper_level_model_lora_B[task] = self.upper_level_model_lora_B[task].bfloat16()
+        return self
 
 class LoRA:
 
-    def __init__(self, model, r, alpha, float16, tasks=None):
+    def __init__(self, model, r, alpha, bfloat16, tasks=None):
         """
         Input:
         r, alpha: LoRA hyperparameters
@@ -974,7 +1023,7 @@ class LoRA:
         """
         self.model = model
         self.hidden_dim = model.config.hidden_size
-        self.float16 = float16
+        self.bfloat16 = bfloat16
 
         if model.config.model_type == "opt":
             attention_name = "attn"
@@ -1016,9 +1065,12 @@ class LoRA:
                                                           lora_ranks=r, lora_alphas=alpha,
                                                           bias=model.config.enable_bias).to(
                             original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
+
+
+
                     attn.q_proj.weight.data = original_q_weight
                     attn.q_proj.bias.data = original_q_bias
                     attn.v_proj.weight.data = original_v_weight
@@ -1055,9 +1107,9 @@ class LoRA:
                             model.config.hidden_size,
                             r=r, lora_alphas=alpha, bias=attention_bias
                         ).to(original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                     if attention_bias:
@@ -1093,9 +1145,9 @@ class LoRA:
                             config.num_key_value_heads * head_dim,
                             lora_ranks=r, lora_alphas=alpha
                         ).to(original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                 elif model.config.model_type == "gpt2":
@@ -1115,9 +1167,9 @@ class LoRA:
                         attn.c_proj = MultiTaskLoRAConv1D(tasks, model.config.hidden_size,
                                                                  model.config.hidden_size, lora_ranks=r,
                                                                  lora_alphas=alpha).to(original_c_proj_weight.device)
-                    if float16:
-                        attn.c_attn.half()
-                        attn.c_proj.half()
+                    if bfloat16:
+                        attn.c_attn.bfloat16()
+                        attn.c_proj.bfloat16()
                     attn.c_attn.weight.data = original_c_attn_weight
                     attn.c_attn.bias.data = original_c_attn_bias
                     attn.c_proj.weight.data = original_c_proj_weight
@@ -1146,9 +1198,9 @@ class LoRA:
                         original_q_weight.device)
                     attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=model.config.enable_bias).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.q_proj.bias.data = original_q_bias
                     attn.v_proj.weight.data = original_v_weight
@@ -1164,9 +1216,9 @@ class LoRA:
                         original_q_weight.device)
                     attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=attention_bias).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                     if attention_bias:
@@ -1180,9 +1232,9 @@ class LoRA:
                     attn.q_proj = nn.Linear(config.hidden_size, config.hidden_size).to(original_q_weight.device)
                     attn.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                 elif model.config.model_type == "gpt2":
@@ -1192,9 +1244,9 @@ class LoRA:
                     original_c_prof_bias = attn.c_proj.bias.data
                     attn.c_attn = Conv1D(model.config.hidden_size * 3, model.config.hidden_size).to(original_c_attn_weight.device)
                     attn.c_proj = Conv1D(model.config.hidden_size, model.config.hidden_size).to(original_c_proj_weight.device)
-                    if self.float16:
-                        attn.c_attn.half()
-                        attn.c_proj.half()
+                    if self.bfloat16:
+                        attn.c_attn.bfloat16()
+                        attn.c_proj.bfloat16()
                     attn.c_attn.weight.data = original_c_attn_weight
                     attn.c_attn.bias.data = original_c_attn_bias
                     attn.c_proj.weight.data = original_c_proj_weight
@@ -1206,7 +1258,7 @@ class LoRA:
 
 
 class BilevelLoRA:
-    def __init__(self, model, r, alpha, float16, tasks=None):
+    def __init__(self, model, r, alpha, bfloat16, tasks=None):
         """
         Input:
         r, alpha: LoRA hyperparameters
@@ -1214,7 +1266,7 @@ class BilevelLoRA:
         """
         self.model = model
         self.hidden_dim = model.config.hidden_size
-        self.float16 = float16
+        self.bfloat16 = bfloat16
 
         if model.config.model_type == "opt":
             attention_name = "attn"
@@ -1258,9 +1310,9 @@ class BilevelLoRA:
                                                                  lora_ranks=r, lora_alphas=alpha,
                                                                  bias=model.config.enable_bias).to(
                             original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.q_proj.bias.data = original_q_bias
                     attn.v_proj.weight.data = original_v_weight
@@ -1297,9 +1349,9 @@ class BilevelLoRA:
                             model.config.hidden_size,
                             r=r, lora_alphas=alpha, bias=attention_bias
                         ).to(original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                     if attention_bias:
@@ -1335,9 +1387,9 @@ class BilevelLoRA:
                             config.num_key_value_heads * head_dim,
                             lora_ranks=r, lora_alphas=alpha
                         ).to(original_v_weight.device)
-                    if float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                 elif model.config.model_type == "gpt2":
@@ -1357,9 +1409,9 @@ class BilevelLoRA:
                         attn.c_proj = MultiTaskBilevelLoRAConv1D(tasks, model.config.hidden_size,
                                                                  model.config.hidden_size, lora_ranks=r,
                                                                  lora_alphas=alpha).to(original_c_proj_weight.device)
-                    if float16:
-                        attn.c_attn.half()
-                        attn.c_proj.half()
+                    if bfloat16:
+                        attn.c_attn.bfloat16()
+                        attn.c_proj.bfloat16()
                     attn.c_attn.weight.data = original_c_attn_weight
                     attn.c_attn.bias.data = original_c_attn_bias
                     attn.c_proj.weight.data = original_c_proj_weight
@@ -1387,9 +1439,9 @@ class BilevelLoRA:
                         original_q_weight.device)
                     attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=model.config.enable_bias).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.q_proj.bias.data = original_q_bias
                     attn.v_proj.weight.data = original_v_weight
@@ -1405,9 +1457,9 @@ class BilevelLoRA:
                         original_q_weight.device)
                     attn.v_proj = nn.Linear(self.hidden_dim, self.hidden_dim, bias=attention_bias).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                     if attention_bias:
@@ -1421,9 +1473,9 @@ class BilevelLoRA:
                     attn.q_proj = nn.Linear(config.hidden_size, config.hidden_size).to(original_q_weight.device)
                     attn.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * head_dim).to(
                         original_v_weight.device)
-                    if self.float16:
-                        attn.q_proj.half()
-                        attn.v_proj.half()
+                    if self.bfloat16:
+                        attn.q_proj.bfloat16()
+                        attn.v_proj.bfloat16()
                     attn.q_proj.weight.data = original_q_weight
                     attn.v_proj.weight.data = original_v_weight
                 elif model.config.model_type == "gpt2":
@@ -1433,9 +1485,9 @@ class BilevelLoRA:
                     original_c_prof_bias = attn.c_proj.bias.data
                     attn.c_attn = Conv1D(self.hidden_dim * 3, self.hidden_dim).to(original_c_attn_weight.device)
                     attn.c_proj = Conv1D(self.hidden_dim, self.hidden_dim).to(original_c_proj_weight.device)
-                    if self.float16:
-                        attn.c_attn.half()
-                        attn.c_proj.half()
+                    if self.bfloat16:
+                        attn.c_attn.bfloat16()
+                        attn.c_proj.bfloat16()
                     attn.c_attn.weight.data = original_c_attn_weight
                     attn.c_attn.bias.data = original_c_attn_bias
                     attn.c_proj.weight.data = original_c_proj_weight

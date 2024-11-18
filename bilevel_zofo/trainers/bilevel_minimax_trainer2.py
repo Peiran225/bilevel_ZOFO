@@ -32,6 +32,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from accelerate import skip_first_batches, DistributedType
+from accelerate.utils import is_xpu_available, is_mlu_available, is_npu_available, is_torch_version, is_mps_available
 from packaging import version
 from sklearn.linear_model import LogisticRegressionCV
 from torch import nn
@@ -47,6 +48,7 @@ from transformers.integrations import (  # isort: split
     hp_params, deepspeed_load_checkpoint,
 )
 from transformers.integrations.tpu import tpu_spmd_dataloader
+from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 from transformers.trainer import _is_peft_model
 from transformers.trainer_callback import (
     DefaultFlowCallback,
@@ -620,6 +622,7 @@ class BiLevelMinimaxTrainer2(Trainer):
                     else:
                         with self.accelerator.accumulate(model):
                             tr_loss_step = self.training_step(model, inputs)
+                            torch.cuda.empty_cache()
                             # set all gradients to zero except for peft params
                         if len(self.training_tasks) > 1:
                             self.zero_grad_except_peft(model)
@@ -1732,6 +1735,8 @@ class BiLevelMinimaxTrainer2(Trainer):
         test_logs = {}
         for i, task_eval_samples in enumerate(self.eval_samples):
             task = self.test_tasks[i]
+            if len(task_eval_samples) == 0:
+                continue
             test_metrics = self.evaluate_func(task, [], task_eval_samples)
             if "accuracy" in test_metrics:
                 test_logs[f'task{str(task)}-test_accuracy'] = test_metrics["accuracy"]
@@ -1755,3 +1760,62 @@ class BiLevelMinimaxTrainer2(Trainer):
         self._memory_tracker.stop_and_update_metrics(output.metrics)
 
         return output.metrics
+
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        token_type_ids = getattr(inputs, "token_type_ids", None)
+        if token_type_ids is not None:
+            input_ids = inputs.input_ids
+            attention_mask = inputs.attention_mask
+            labels = None
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits[..., :-1, :].contiguous()
+
+            if labels is None:
+                labels = input_ids
+            labels = labels[..., 1:].contiguous()
+            label_mask = token_type_ids[..., 1:].contiguous()
+
+            loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+            losses = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))  # [batch_size, length]
+
+            losses = losses.view(logits.size(0), logits.size(1)) * label_mask
+            loss = torch.sum(losses, axis=1) / torch.sum(label_mask, axis=1)
+            loss = loss.mean()
+            return (loss, outputs) if return_outputs else loss
+        else:
+            if self.label_smoother is not None and "labels" in inputs:
+                labels = inputs.pop("labels")
+            else:
+                labels = None
+            outputs = model(**inputs)
+            # Save past state if it exists
+            # TODO: this needs to be fixed and made cleaner later.
+            if self.args.past_index >= 0:
+                self._past = outputs[self.args.past_index]
+
+            if labels is not None:
+                unwrapped_model = self.accelerator.unwrap_model(model)
+                if _is_peft_model(unwrapped_model):
+                    model_name = unwrapped_model.base_model.model._get_name()
+                else:
+                    model_name = unwrapped_model._get_name()
+                if model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+                    loss = self.label_smoother(outputs, labels, shift_labels=True)
+                else:
+                    loss = self.label_smoother(outputs, labels)
+            else:
+                if isinstance(outputs, dict) and "loss" not in outputs:
+                    raise ValueError(
+                        "The model did not return a loss from the inputs, only the following keys: "
+                        f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
+                    )
+                # We don't use .loss here since the model may return tuples instead of ModelOutput.
+                loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+
+            return (loss, outputs) if return_outputs else loss

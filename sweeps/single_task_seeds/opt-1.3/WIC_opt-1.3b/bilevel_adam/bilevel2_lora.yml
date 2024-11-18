@@ -1,0 +1,53 @@
+name: bilevel_adam_WIC_lora_opt-1.3
+project: zo_bench
+command:
+- ${interpreter}
+- ${program}
+- ${args}
+- "--lora"
+- "--lora_alpha=16"
+- "--lora_r=8"
+- "--model_name=facebook/opt-1.3b"
+- "--training_tasks=WIC"
+- "--test_tasks=WIC"
+- "--output_dir=/beacon-projects/ihc-huang/bilevel-zofo"
+- "--num_train_epochs=1000"
+- "--per_device_train_batch_size=8"
+- "--load_best_model_at_end"
+- "--evaluation_strategy=steps"
+- "--save_strategy=steps"
+- "--save_total_limit=1"
+- "--max_steps=5000"
+- "--logging_steps=10"
+- "--num_eval=1000"
+- "--num_train=666"
+- "--num_dev=334"
+- "--perturbation_mode=two_side"
+- "--trainer=bilevel_minimax2"
+- "--optimizer=adam"
+- "--train_set_seed=0"
+- "--lr_scheduler_type=constant"
+- "--eval_steps=500"
+- "--save_steps=500"
+- "--weight_decay=0"
+- "--upper_optimizer=adam"
+- "--upper_momentum=0.0"
+- "--zo_eps=1e-3"
+- "--load_bfloat16=True"
+- "--overwrite_output_dir=True"
+- "--learning_rate=1e-4"
+- "--upper_learning_rate=1e-7"
+- "--Lambda=1e6"
+- "--lower_level_num_train_steps=30"
+method: grid
+metric:
+  goal: maximize
+  name: test_acc
+parameters:
+  seed:
+    values:
+      - 0
+      - 43
+      - 100
+
+program: run_bilevel.py
